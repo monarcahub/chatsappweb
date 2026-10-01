@@ -110,7 +110,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
       <div className="h-44 bg-[#00a884] w-full flex items-center px-6 sm:px-12 lg:px-20 relative shrink-0">
         <div className="flex items-center gap-3">
           <img
-            src="https://vhibadmtznoomdanosyj.supabase.co/storage/v1/object/public/images/ChatsAppWebAI-favicon.png"
+            src="https://vhibadmtznoomdanosyj.supabase.co/storage/v1/object/public/images/ChatsAppWebAI-favicon.webp"
             alt="ChatsApp Web AI"
             className="w-10 h-10 rounded-full object-contain bg-white/20 shadow-sm p-1"
           />
@@ -136,7 +136,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
           <div className="text-center mb-6">
             <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-[#00a884]/15 mb-3 p-1">
               <img
-                src="https://vhibadmtznoomdanosyj.supabase.co/storage/v1/object/public/images/ChatsAppWebAI-favicon.png"
+                src="https://vhibadmtznoomdanosyj.supabase.co/storage/v1/object/public/images/ChatsAppWebAI-favicon.webp"
                 alt="ChatsApp Web AI Logo"
                 className="w-full h-full object-contain"
               />
