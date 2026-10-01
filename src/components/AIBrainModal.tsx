@@ -35,6 +35,7 @@ import {
   Edit3,
 } from 'lucide-react';
 import { Account } from '../types';
+import { supabase, ensureSupabaseConfig } from '../lib/supabase';
 import { MarkdownTextBox } from './MarkdownTextBox';
 import { MarkdownViewerModal } from './MarkdownViewerModal';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -247,37 +248,38 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
     if (!account?.id) return;
     setIsLoadingChannels(true);
     try {
-      const res = await fetch(`/api/channels?account_id=${encodeURIComponent(account.id)}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.channels)) {
-          const mapped: ConnectedChannelItem[] = data.channels.map((ch: any) => {
-            const apiType = ch.config?.api_type || 'meta_official';
-            return {
-              id: ch.id,
-              name: ch.name || 'WhatsApp Principal',
-              type: ch.type || 'whatsapp',
-              identifier:
-                ch.config?.waba_phone ||
-                ch.config?.phone ||
-                ch.config?.username ||
-                account.whatsappPhone ||
-                '+55',
-              provider:
-                ch.type === 'whatsapp'
-                  ? apiType === 'monarcahub_standard'
-                    ? 'Api Padrão MonarcaHub'
-                    : 'Api Oficial Meta Business'
-                  : ch.type === 'instagram'
-                  ? 'Instagram Direct'
-                  : 'Webchat',
-              apiType,
-              is_active: ch.is_active !== false,
-              ai_enabled: ch.config?.ai_enabled !== false,
-            };
-          });
-          setChannels(mapped);
-        }
+      const { data: channelsData, error: chErr } = await supabase
+        .from('channels')
+        .select('*')
+        .eq('account_id', account.id);
+
+      if (!chErr && Array.isArray(channelsData)) {
+        const mapped: ConnectedChannelItem[] = channelsData.map((ch: any) => {
+          const apiType = ch.config?.api_type || 'meta_official';
+          return {
+            id: ch.id,
+            name: ch.name || 'WhatsApp Principal',
+            type: ch.type || 'whatsapp',
+            identifier:
+              ch.config?.waba_phone ||
+              ch.config?.phone ||
+              ch.config?.username ||
+              account.whatsappPhone ||
+              '+55',
+            provider:
+              ch.type === 'whatsapp'
+                ? apiType === 'monarcahub_standard'
+                  ? 'Api Padrão MonarcaHub'
+                  : 'Api Oficial Meta Business'
+                : ch.type === 'instagram'
+                ? 'Instagram Direct'
+                : 'Webchat',
+            apiType,
+            is_active: ch.is_active !== false,
+            ai_enabled: ch.config?.ai_enabled !== false,
+          };
+        });
+        setChannels(mapped);
       }
     } catch (err) {
       console.warn('Erro ao carregar canais da empresa no cérebro:', err);
@@ -286,7 +288,7 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
     }
   };
 
-  // Carrega configurações reais do backend/Supabase ao abrir
+  // Carrega configurações reais da tabela cerebro_ia no Supabase ao abrir
   useEffect(() => {
     if (!isOpen || !account?.id) return;
 
@@ -295,12 +297,18 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
 
     fetchChannels();
 
-    fetch(`/api/ai-brain?account_id=${encodeURIComponent(account.id)}`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
+    const loadCerebroConfig = async () => {
+      try {
+        await ensureSupabaseConfig();
+        const { data: cfg, error } = await supabase
+          .from('cerebro_ia')
+          .select('*')
+          .eq('account_id', account.id)
+          .maybeSingle();
+
         if (!isMounted) return;
-        if (data?.config) {
-          const cfg = data.config;
+
+        if (cfg) {
           setBrainConfig((prev) => ({
             ...prev,
             business_name: cfg.business_name || prev.business_name,
@@ -337,13 +345,14 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
             business_name: account.name || prev.business_name,
           }));
         }
-      })
-      .catch((err) => {
+      } catch (err) {
         console.warn('Erro ao carregar configurações do cérebro:', err);
-      })
-      .finally(() => {
+      } finally {
         if (isMounted) setIsLoadingConfig(false);
-      });
+      }
+    };
+
+    loadCerebroConfig();
 
     return () => {
       isMounted = false;
@@ -376,24 +385,47 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
 
     setIsSavingConfig(true);
     try {
-      const res = await fetch('/api/ai-brain', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          account_id: account.id,
-          ...brainConfig,
-          knowledge_base: knowledgeList,
-        }),
-      });
+      await ensureSupabaseConfig();
+      const payload: Record<string, any> = {
+        account_id: account.id,
+        business_name: brainConfig.business_name,
+        address: brainConfig.address,
+        opening_hours: brainConfig.opening_hours,
+        pricing_info: brainConfig.pricing_info,
+        faq_text: brainConfig.faq_text,
+        tone_of_voice: brainConfig.tone_of_voice,
+        pix_key: brainConfig.pix_key,
+        observations: brainConfig.observations,
+        is_active: brainConfig.is_active,
+        allow_calls: brainConfig.allow_calls,
+        reply_groups: brainConfig.reply_groups,
+        reply_audio: brainConfig.reply_audio,
+        send_images: brainConfig.send_images,
+        integrate_agenda: brainConfig.integrate_agenda,
+        recognize_payments: brainConfig.recognize_payments,
+        ai_active_all: brainConfig.ai_active_all,
+        omnichannel: brainConfig.omnichannel,
+        ai_active_instagram: brainConfig.ai_active_instagram,
+        instagram_status: brainConfig.instagram_status,
+        use_official_api_coexistencia: brainConfig.use_official_api_coexistencia,
+        test_number: brainConfig.test_number,
+        extra_users_count: brainConfig.extra_users_count,
+        knowledge_base: knowledgeList,
+        updated_at: new Date().toISOString(),
+      };
 
-      if (res.ok) {
-        showToast('Configurações salvas com sucesso no banco!');
-      } else {
-        const json = await res.json().catch(() => ({}));
-        showToast(`Erro ao salvar: ${json.error || 'Verifique se a tabela cerebro_ia foi criada no Supabase'}`);
+      const { error: upsertErr } = await supabase
+        .from('cerebro_ia')
+        .upsert(payload, { onConflict: 'account_id' });
+
+      if (upsertErr) {
+        throw upsertErr;
       }
+
+      showToast('Configurações salvas com sucesso!');
     } catch (err: any) {
-      showToast(`Falha de conexão: ${err?.message || 'Tente novamente'}`);
+      console.error('Erro ao salvar cérebro:', err);
+      showToast(`Erro ao salvar: ${err?.message || 'Tente novamente'}`);
     } finally {
       setIsSavingConfig(false);
     }
@@ -408,30 +440,42 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
 
     setIsTogglingStatus(true);
     try {
-      const res = await fetch('/api/ai-brain/toggle-status', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          is_active: newStatus,
+      // 1. Atualizar cerebro_ia diretamente
+      await supabase
+        .from('cerebro_ia')
+        .upsert({
           account_id: account.id,
-        }),
-      });
+          is_active: newStatus,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'account_id' });
 
-      if (res.ok) {
-        setBrainConfig((prev) => ({ ...prev, is_active: newStatus }));
-        setChannels((prev) => prev.map((ch) => ({ ...ch, ai_enabled: newStatus })));
-        if (onToggleAIGlobal) {
-          onToggleAIGlobal(newStatus);
-        }
-        showToast(
-          newStatus
-            ? `🚀 IA ATIVADA em todos os canais de ${account.name}!`
-            : `⏸️ IA PAUSADA em todos os canais de ${account.name} (Atendimento 100% Humano)!`
-        );
-      } else {
-        const json = await res.json().catch(() => ({}));
-        showToast(`Erro ao alterar status: ${json.error || 'Falha ao salvar'}`);
+      // 2. Atualizar todos os canais da empresa
+      for (const ch of channels) {
+        const { data: existingCh } = await supabase
+          .from('channels')
+          .select('config')
+          .eq('id', ch.id)
+          .single();
+        const currentCfg = existingCh?.config || {};
+        await supabase
+          .from('channels')
+          .update({
+            config: { ...currentCfg, ai_enabled: newStatus },
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', ch.id);
       }
+
+      setBrainConfig((prev) => ({ ...prev, is_active: newStatus }));
+      setChannels((prev) => prev.map((ch) => ({ ...ch, ai_enabled: newStatus })));
+      if (onToggleAIGlobal) {
+        onToggleAIGlobal(newStatus);
+      }
+      showToast(
+        newStatus
+          ? `🚀 Automação ativada em todos os canais de ${account.name}!`
+          : `⏸️ Automação pausada em todos os canais de ${account.name} (Atendimento 100% Humano)!`
+      );
     } catch (err: any) {
       showToast(`Falha de conexão: ${err?.message || 'Tente novamente'}`);
     } finally {
@@ -445,45 +489,44 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
     const newStatus = !currentAiEnabled;
     setTogglingChannelId(channelId);
     try {
-      const res = await fetch('/api/channels/toggle-ai', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          channel_id: channelId,
-          ai_enabled: newStatus,
-          account_id: account.id,
-        }),
-      });
+      const { data: chData } = await supabase
+        .from('channels')
+        .select('config')
+        .eq('id', channelId)
+        .single();
 
-      if (res.ok) {
-        const data = await res.json();
-        setChannels((prev) =>
-          prev.map((ch) => (ch.id === channelId ? { ...ch, ai_enabled: newStatus } : ch))
-        );
+      const updatedCfg = { ...(chData?.config || {}), ai_enabled: newStatus };
+      await supabase
+        .from('channels')
+        .update({
+          config: updatedCfg,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', channelId);
 
-        // Atualiza status consolidado da empresa
-        const nextActiveCount = channels.reduce((acc, c) => {
-          if (c.id === channelId) return acc + (newStatus ? 1 : 0);
-          return acc + (c.ai_enabled ? 1 : 0);
-        }, 0);
-        const anyActive = nextActiveCount > 0;
-        setBrainConfig((prev) => ({ ...prev, is_active: anyActive }));
-        if (onToggleAIGlobal) {
-          onToggleAIGlobal(anyActive);
-        }
+      setChannels((prev) =>
+        prev.map((ch) => (ch.id === channelId ? { ...ch, ai_enabled: newStatus } : ch))
+      );
 
-        const target = channels.find((c) => c.id === channelId);
-        showToast(
-          newStatus
-            ? `🚀 IA Ativada no canal "${target?.name || 'Canal'}"!`
-            : `⏸️ IA Pausada no canal "${target?.name || 'Canal'}" (Humano neste número)!`
-        );
-      } else {
-        const json = await res.json().catch(() => ({}));
-        showToast(`Erro ao alterar canal: ${json.error || 'Falha ao salvar'}`);
+      // Atualiza status consolidado da empresa
+      const nextActiveCount = channels.reduce((acc, c) => {
+        if (c.id === channelId) return acc + (newStatus ? 1 : 0);
+        return acc + (c.ai_enabled ? 1 : 0);
+      }, 0);
+      const anyActive = nextActiveCount > 0;
+      setBrainConfig((prev) => ({ ...prev, is_active: anyActive }));
+      if (onToggleAIGlobal) {
+        onToggleAIGlobal(anyActive);
       }
+
+      const target = channels.find((c) => c.id === channelId);
+      showToast(
+        newStatus
+          ? `🚀 IA Ativada no canal "${target?.name || 'Canal'}"!`
+          : `⏸️ IA Pausada no canal "${target?.name || 'Canal'}" (Humano neste número)!`
+      );
     } catch (err: any) {
-      showToast(`Falha de conexão: ${err?.message || 'Tente novamente'}`);
+      showToast(`Erro ao alterar canal: ${err?.message || 'Tente novamente'}`);
     } finally {
       setTogglingChannelId(null);
     }
@@ -731,7 +774,7 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
                 {hasAnyActiveChannel ? <Pause className="w-4 h-4" /> : <Power className="w-4 h-4" />}
                 <span>
                   {isTogglingStatus
-                    ? 'Salvando no banco...'
+                    ? 'Salvando...'
                     : hasAnyActiveChannel
                     ? 'Pausar IA em Todos os Canais'
                     : 'Ativar IA em Todos os Canais'}
@@ -923,7 +966,7 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
             {isLoadingConfig && (
               <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/30 text-xs text-blue-400 flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-blue-400 animate-ping" />
-                <span>Carregando dados da empresa no Supabase...</span>
+                <span>Carregando dados da empresa...</span>
               </div>
             )}
 
@@ -1090,7 +1133,7 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
             {/* Salvar Botão */}
             <div className="pt-3 border-t border-gray-700/20 flex items-center justify-between">
               <span className="text-[11px] text-gray-400">
-                Os dados são salvos na tabela <code className="text-[#00a884]">public.cerebro_ia</code> vinculados à empresa <strong className="text-white">{account?.name || 'Matriz'}</strong>.
+                Os dados são sincronizados e vinculados à empresa <strong className="text-white">{account?.name || 'Matriz'}</strong>.
               </span>
 
               <button
@@ -1327,7 +1370,7 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
                           <span>FAQ Oficial da Empresa</span>
                         </span>
                         <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-[#00a884]/20 text-[#00a884] border border-[#00a884]/30">
-                          Coluna: cerebro_ia.faq_text
+                          Base Central
                         </span>
                         <span className="font-bold text-xs">Perguntas & Respostas Frequentes</span>
                       </div>
@@ -1363,13 +1406,13 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
                           type="button"
                           onClick={() =>
                             openMarkdownModal(
-                              'FAQ & Dúvidas Rápidas (cerebro_ia.faq_text)',
+                              'FAQ & Dúvidas Rápidas',
                               brainConfig.faq_text,
                               (newVal) => {
                                 setBrainConfig((prev) => ({ ...prev, faq_text: newVal }));
-                                showToast('FAQ atualizado. Clique em Salvar para gravar no Supabase.');
+                                showToast('FAQ atualizado. Clique em Salvar para salvar as alterações.');
                               },
-                              'Instrução oficial da coluna faq_text salva no Supabase'
+                              'Instrução oficial do FAQ da empresa'
                             )
                           }
                           className={`px-2 py-0.5 rounded-md border text-[10px] font-semibold flex items-center gap-1 transition-all cursor-pointer ${
@@ -1400,13 +1443,13 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
                             <span>Visualização Formatada (Markdown)</span>
                           </span>
                           <span className="text-[10px] text-gray-400 font-normal">
-                            Sincronizado com <code className="text-[#00a884]">public.cerebro_ia.faq_text</code>
+                            Sincronizado com a base de conhecimento
                           </span>
                         </div>
 
                         <MarkdownRenderer
                           content={brainConfig.faq_text}
-                          emptyText="Nenhum FAQ cadastrado ainda na coluna faq_text da tabela cerebro_ia. Clique em Editar para adicionar."
+                          emptyText="Nenhum FAQ cadastrado ainda. Clique em Editar para adicionar."
                         />
                       </div>
                     ) : (
@@ -1423,7 +1466,7 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
                           }`}
                         />
                         <div className="flex items-center justify-between text-[10px] text-gray-400">
-                          <span>Salvo na coluna <code className="text-[#00a884]">faq_text</code> da tabela <code className="text-[#00a884]">cerebro_ia</code>.</span>
+                          <span>Sincronizado na base de conhecimento oficial da empresa.</span>
                           <button
                             type="button"
                             onClick={handleSaveBrainConfig}
@@ -1431,14 +1474,14 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
                             className="px-3 py-1 rounded-lg bg-[#00a884] hover:bg-[#02906f] text-white text-xs font-bold flex items-center gap-1 cursor-pointer disabled:opacity-50"
                           >
                             <Save className="w-3 h-3" />
-                            <span>{isSavingConfig ? 'Salvando...' : 'Salvar no Supabase'}</span>
+                            <span>{isSavingConfig ? 'Salvando...' : 'Salvar Configurações'}</span>
                           </button>
                         </div>
                       </div>
                     )}
 
                     <div className="mt-2 text-[10px] text-gray-400 flex items-center justify-between">
-                      <span>Origem: <strong>Tabela cerebro_ia (Supabase)</strong></span>
+                      <span>Origem: <strong>Base Central da Empresa</strong></span>
                       <span>{brainConfig.faq_text?.length || 0} caracteres</span>
                     </div>
                   </div>
@@ -1574,7 +1617,7 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
                 className="px-4 py-1.5 rounded-lg bg-[#00a884] hover:bg-[#02906f] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
               >
                 <Save className="w-3.5 h-3.5" />
-                <span>Salvar Tudo no Banco</span>
+                <span>Salvar Tudo</span>
               </button>
             </div>
           </div>
@@ -1963,7 +2006,7 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
             {/* Salvar Botão */}
             <div className="pt-3 border-t border-gray-700/20 flex items-center justify-between">
               <span className="text-[11px] text-gray-400">
-                Os comportamentos são salvos na tabela <code className="text-[#00a884]">public.cerebro_ia</code> da sua empresa.
+                Os comportamentos e automações são sincronizados com a sua empresa.
               </span>
 
               <button

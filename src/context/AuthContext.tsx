@@ -320,7 +320,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!authUserId) {
         return {
           success: false,
-          error: 'Identificador de usuário não retornado pelo Supabase Auth.',
+          error: 'Identificador de usuário não retornado pelo serviço de autenticação.',
         };
       }
 
@@ -436,10 +436,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(unlinkedUser);
       return { success: true };
     } catch (directErr: any) {
-      console.error('Erro na autenticação direta do Supabase:', directErr);
+      console.error('Erro na autenticação:', directErr);
       return {
         success: false,
-        error: directErr?.message || 'Erro inesperado ao consultar o Supabase.',
+        error: directErr?.message || 'Erro inesperado ao consultar o servidor.',
       };
     }
   };

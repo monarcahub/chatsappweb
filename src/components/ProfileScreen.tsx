@@ -170,10 +170,10 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         });
       }
 
-      showToast('Perfil pessoal salvo com sucesso no Supabase!');
+      showToast('Perfil salvo com sucesso!');
     } catch (err: any) {
       console.error('Erro ao salvar perfil pessoal:', err);
-      showToast('Erro ao salvar perfil no banco.');
+      showToast('Erro ao salvar perfil. Tente novamente.');
     } finally {
       setIsSaving(false);
     }
@@ -237,10 +237,10 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         setAvatarUrl(newAvatarUrl);
         await updateUserProfile({ avatarUrl: newAvatarUrl });
         setIsAvatarModalOpen(false);
-        showToast('Foto de perfil salva com sucesso no Supabase Storage!');
+        showToast('Foto de perfil atualizada com sucesso!');
       } catch (err: any) {
         console.error('Erro no upload de avatar:', err);
-        showToast(`Erro ao enviar foto: ${err?.message || 'Falha no Storage'}`);
+        showToast(`Erro ao enviar foto: ${err?.message || 'Falha no envio da foto'}`);
       } finally {
         setIsUploadingAvatar(false);
         if (fileInputRef.current) fileInputRef.current.value = '';
@@ -457,7 +457,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 </h2>
               </div>
               <span className="text-[11px] font-medium px-2.5 py-0.5 rounded-full bg-[#00a884]/15 text-[#00a884]">
-                public.profiles
+                Dados Pessoais
               </span>
             </div>
 
@@ -603,7 +603,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                   >
                     <span>E-mail de Login</span>
                     <span className="text-[10px] text-[#00a884] font-medium inline-flex items-center gap-0.5">
-                      <ShieldCheck className="w-3 h-3" /> Supabase Auth
+                      <ShieldCheck className="w-3 h-3" /> Autenticado
                     </span>
                   </label>
                   <input
@@ -1102,10 +1102,10 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 </div>
                 <div className="text-left">
                   <span className="font-semibold text-sm block">
-                    {isUploadingAvatar ? 'Enviando para o Supabase Storage...' : 'Carregar foto do computador'}
+                    {isUploadingAvatar ? 'Enviando imagem...' : 'Carregar foto do computador'}
                   </span>
                   <span className="text-[11px] text-[#8696a0]">
-                    JPG, PNG ou WEBP (até 5MB) • Bucket: avatar
+                    JPG, PNG ou WEBP (até 5MB)
                   </span>
                 </div>
               </button>

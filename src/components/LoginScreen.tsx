@@ -204,13 +204,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                   <input
                     type="email"
                     required
+                    autoComplete="username email"
                     value={email}
                     onChange={(e) => {
                       setEmail(e.target.value);
                       if (loginError) setLoginError(null);
                     }}
                     placeholder="seu.email@empresa.com.br"
-                    className="w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0]"
+                    style={{ colorScheme: darkMode ? 'dark' : 'light' }}
+                    className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
+                      darkMode ? 'login-autofill-dark text-[#e9edef]' : 'login-autofill-light text-[#111b21]'
+                    }`}
                   />
                 </div>
               </div>
@@ -230,13 +234,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                   <input
                     type={showPassword ? 'text' : 'password'}
                     required
+                    autoComplete="current-password"
                     value={password}
                     onChange={(e) => {
                       setPassword(e.target.value);
                       if (loginError) setLoginError(null);
                     }}
                     placeholder="Digite sua senha"
-                    className="w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0]"
+                    style={{ colorScheme: darkMode ? 'dark' : 'light' }}
+                    className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
+                      darkMode ? 'login-autofill-dark text-[#e9edef]' : 'login-autofill-light text-[#111b21]'
+                    }`}
                   />
                   <button
                     type="button"
@@ -369,13 +377,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                   <input
                     type="email"
                     required
+                    autoComplete="email"
                     placeholder="admin@suaempresa.com.br"
                     value={newEmail}
                     onChange={(e) => {
                       setNewEmail(e.target.value);
                       if (registerError) setRegisterError(null);
                     }}
-                    className="w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0]"
+                    style={{ colorScheme: darkMode ? 'dark' : 'light' }}
+                    className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
+                      darkMode ? 'login-autofill-dark text-[#e9edef]' : 'login-autofill-light text-[#111b21]'
+                    }`}
                   />
                 </div>
               </div>
@@ -396,13 +408,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                     <input
                       type={showNewPassword ? 'text' : 'password'}
                       required
+                      autoComplete="new-password"
                       placeholder="Mín. 6 dígitos"
                       value={newPassword}
                       onChange={(e) => {
                         setNewPassword(e.target.value);
                         if (registerError) setRegisterError(null);
                       }}
-                      className="w-full bg-transparent text-xs focus:outline-none placeholder:text-[#8696a0]"
+                      style={{ colorScheme: darkMode ? 'dark' : 'light' }}
+                      className={`w-full bg-transparent text-xs focus:outline-none placeholder:text-[#8696a0] ${
+                        darkMode ? 'login-autofill-dark text-[#e9edef]' : 'login-autofill-light text-[#111b21]'
+                      }`}
                     />
                     <button
                       type="button"
@@ -429,13 +445,17 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                     <input
                       type={showNewConfirmPassword ? 'text' : 'password'}
                       required
+                      autoComplete="new-password"
                       placeholder="Repita a senha"
                       value={newConfirmPassword}
                       onChange={(e) => {
                         setNewConfirmPassword(e.target.value);
                         if (registerError) setRegisterError(null);
                       }}
-                      className="w-full bg-transparent text-xs focus:outline-none placeholder:text-[#8696a0]"
+                      style={{ colorScheme: darkMode ? 'dark' : 'light' }}
+                      className={`w-full bg-transparent text-xs focus:outline-none placeholder:text-[#8696a0] ${
+                        darkMode ? 'login-autofill-dark text-[#e9edef]' : 'login-autofill-light text-[#111b21]'
+                      }`}
                     />
                     <button
                       type="button"

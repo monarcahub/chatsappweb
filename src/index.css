@@ -46,3 +46,98 @@
 .markdown-body th { background-color: rgba(0, 0, 0, 0.2); font-weight: bold; }
 .markdown-body hr { border: 0; border-top: 1px solid rgba(134, 150, 160, 0.25); margin: 0.75rem 0; }
 .markdown-body a { color: #00a884; text-decoration: underline; }
+
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  color-scheme: dark;
+}
+
+/* Impedir que o autofill do gerenciador de senhas do navegador quebre o tema escuro com fundo branco */
+input:-webkit-autofill,
+input:-webkit-autofill:hover, 
+input:-webkit-autofill:focus, 
+input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px #111b21 inset !important;
+  box-shadow: 0 0 0 1000px #111b21 inset !important;
+  -webkit-text-fill-color: #e9edef !important;
+  color: #e9edef !important;
+  caret-color: #e9edef !important;
+  font-family: inherit !important;
+  background-color: #111b21 !important;
+  transition: background-color 500000s ease-in-out 0s, color 500000s ease-in-out 0s !important;
+}
+
+input:autofill,
+input:autofill:hover,
+input:autofill:focus,
+input:autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px #111b21 inset !important;
+  box-shadow: 0 0 0 1000px #111b21 inset !important;
+  -webkit-text-fill-color: #e9edef !important;
+  color: #e9edef !important;
+  caret-color: #e9edef !important;
+  font-family: inherit !important;
+  background-color: #111b21 !important;
+  transition: background-color 500000s ease-in-out 0s, color 500000s ease-in-out 0s !important;
+}
+
+.login-autofill-dark,
+.login-autofill-dark:-webkit-autofill,
+.login-autofill-dark:-webkit-autofill:hover,
+.login-autofill-dark:-webkit-autofill:focus,
+.login-autofill-dark:-webkit-autofill:active {
+  color-scheme: dark !important;
+  -webkit-box-shadow: 0 0 0 1000px #111b21 inset !important;
+  box-shadow: 0 0 0 1000px #111b21 inset !important;
+  -webkit-text-fill-color: #e9edef !important;
+  color: #e9edef !important;
+  caret-color: #e9edef !important;
+  background-color: #111b21 !important;
+  transition: background-color 500000s ease-in-out 0s, color 500000s ease-in-out 0s !important;
+}
+
+.login-autofill-dark:autofill,
+.login-autofill-dark:autofill:hover,
+.login-autofill-dark:autofill:focus,
+.login-autofill-dark:autofill:active {
+  color-scheme: dark !important;
+  -webkit-box-shadow: 0 0 0 1000px #111b21 inset !important;
+  box-shadow: 0 0 0 1000px #111b21 inset !important;
+  -webkit-text-fill-color: #e9edef !important;
+  color: #e9edef !important;
+  caret-color: #e9edef !important;
+  background-color: #111b21 !important;
+  transition: background-color 500000s ease-in-out 0s, color 500000s ease-in-out 0s !important;
+}
+
+.login-autofill-light,
+.login-autofill-light:-webkit-autofill,
+.login-autofill-light:-webkit-autofill:hover,
+.login-autofill-light:-webkit-autofill:focus,
+.login-autofill-light:-webkit-autofill:active {
+  color-scheme: light !important;
+  -webkit-box-shadow: 0 0 0 1000px #f7f9fa inset !important;
+  box-shadow: 0 0 0 1000px #f7f9fa inset !important;
+  -webkit-text-fill-color: #111b21 !important;
+  color: #111b21 !important;
+  caret-color: #111b21 !important;
+  background-color: #f7f9fa !important;
+  transition: background-color 500000s ease-in-out 0s, color 500000s ease-in-out 0s !important;
+}
+
+.login-autofill-light:autofill,
+.login-autofill-light:autofill:hover,
+.login-autofill-light:autofill:focus,
+.login-autofill-light:autofill:active {
+  color-scheme: light !important;
+  -webkit-box-shadow: 0 0 0 1000px #f7f9fa inset !important;
+  box-shadow: 0 0 0 1000px #f7f9fa inset !important;
+  -webkit-text-fill-color: #111b21 !important;
+  color: #111b21 !important;
+  caret-color: #111b21 !important;
+  background-color: #f7f9fa !important;
+  transition: background-color 500000s ease-in-out 0s, color 500000s ease-in-out 0s !important;
+}

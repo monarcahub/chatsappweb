@@ -545,8 +545,8 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
                   <span className="text-gray-300 font-mono">Restrito à empresa</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-400">Banco de Dados</span>
-                  <span className="text-gray-300 font-mono">Nuvem Dedicada Conectada</span>
+                  <span className="text-gray-400">Servidor em Nuvem</span>
+                  <span className="text-gray-300 font-mono">Conectado e Seguro</span>
                 </div>
               </div>
             </div>
