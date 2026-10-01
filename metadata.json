@@ -1,0 +1,7 @@
+{
+  "name": "ChatsApp Web AI - Plataforma Omnichannel da MonarcaHub",
+  "description": "Plataforma Omnichannel de atendimento com interface ChatsApp Web, integrada a múltiplos canais de WhatsApp, Instagram e Web Chat com CRM integrado.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
