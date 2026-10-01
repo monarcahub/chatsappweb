@@ -12,7 +12,7 @@ interface AuthContextType {
   switchAccount: (accountId: string) => void;
   registerAccount: (accountName: string, segment: string, adminName: string, email: string, password: string) => Promise<{ success: boolean; account?: Account; error?: string }>;
   updateUserProfile: (updates: Partial<AuthUser>) => Promise<void> | void;
-  updateCurrentAccount: (updates: Partial<Account>) => void;
+  updateCurrentAccount: (updates: Partial<Account>) => Promise<{ success: boolean; error?: string }> | void;
 }
 
 const STORAGE_KEY_USER = 'chatsapp_auth_user';
@@ -27,6 +27,33 @@ export const UNLINKED_ACCOUNT: Account = {
   whatsappPhone: '',
   plan: 'Sem plano ativo',
   createdAt: '',
+};
+
+export const mapDbAccountToAccount = (accRow: any): Account => {
+  if (!accRow) return UNLINKED_ACCOUNT;
+  return {
+    id: accRow.id,
+    name: accRow.name || 'Empresa',
+    slug: accRow.slug || 'empresa',
+    segment: accRow.segment || 'Serviços & Atendimento',
+    whatsappPhone: accRow.whatsapp_phone || '',
+    phone: accRow.whatsapp_phone || '',
+    email: accRow.email || '',
+    plan: accRow.plan || 'Plano Pro Omnichannel',
+    logoUrl: accRow.logo_url || '',
+    createdAt: accRow.created_at,
+    description: accRow.description || '',
+    address: accRow.address || '',
+    coverageArea: accRow.coverage_area || 'Localização exata',
+    locationNotes: accRow.location_notes || '',
+    website: accRow.website || '',
+    extraWebsites: Array.isArray(accRow.extra_websites) ? accRow.extra_websites : [],
+    bannerUrl: accRow.banner_url || '',
+    businessHours:
+      accRow.business_hours && typeof accRow.business_hours === 'object'
+        ? accRow.business_hours
+        : {},
+  };
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -122,15 +149,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const userAccounts: Account[] = userRows
             .map((r: any) => r.accounts)
             .filter((a: any) => Boolean(a && a.id))
-            .map((a: any) => ({
-              id: a.id,
-              name: a.name,
-              slug: a.slug,
-              segment: a.segment,
-              whatsappPhone: a.whatsapp_phone || '',
-              plan: a.plan || 'Plano Pro Omnichannel',
-              createdAt: a.created_at,
-            }));
+            .map((a: any) => mapDbAccountToAccount(a));
 
           if (userAccounts.length > 0) {
             const options: Account[] = [...userAccounts];
@@ -332,15 +351,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const validAccounts: Account[] = (userRows || [])
         .map((r: any) => r.accounts)
         .filter((accRow: any) => Boolean(accRow && accRow.id))
-        .map((accRow: any) => ({
-          id: accRow.id,
-          name: accRow.name,
-          slug: accRow.slug,
-          segment: accRow.segment,
-          whatsappPhone: accRow.whatsapp_phone || '',
-          plan: accRow.plan || 'Plano Pro Omnichannel',
-          createdAt: accRow.created_at,
-        }));
+        .map((accRow: any) => mapDbAccountToAccount(accRow));
 
       // 3. Carregar ou criar perfil pessoal em public.profiles usando o authUserId
       let profileData: any = null;
@@ -502,19 +513,78 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Atualizar dados da conta atual (ex: telefone, email, nome)
-  const updateCurrentAccount = (updates: Partial<Account>) => {
-    setCurrentAccount((prev) => {
-      const updated = { ...prev, ...updates };
-      localStorage.setItem(STORAGE_KEY_ACCOUNT, JSON.stringify(updated));
-      return updated;
-    });
+  // Atualizar dados da conta atual (persiste em public.accounts e sincroniza contexto)
+  const updateCurrentAccount = async (updates: Partial<Account>): Promise<{ success: boolean; error?: string }> => {
+    if (!currentAccount?.id) {
+      return { success: false, error: 'Nenhuma empresa ativa selecionada.' };
+    }
+
+    const updatedAccount: Account = { ...currentAccount, ...updates };
+
+    // Atualiza estado local imediatamente para feedback reativo
+    setCurrentAccount(updatedAccount);
     setAvailableAccounts((prevList) =>
       prevList.map((acc) => (acc.id === currentAccount.id ? { ...acc, ...updates } : acc))
     );
+    try {
+      localStorage.setItem(STORAGE_KEY_ACCOUNT, JSON.stringify(updatedAccount));
+    } catch {}
+
+    // Se o nome da empresa mudou, reflete em user.accountName
+    if (updates.name && user) {
+      const updatedUser: AuthUser = { ...user, accountName: updates.name };
+      setUser(updatedUser);
+      try {
+        localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(updatedUser));
+      } catch {}
+    }
+
+    try {
+      await ensureSupabaseConfig();
+      if (!isSupabaseConfigured) {
+        return { success: true };
+      }
+
+      const payload: Record<string, any> = {
+        updated_at: new Date().toISOString(),
+      };
+
+      // Mapear todas as colunas existentes em public.accounts
+      if (updates.name !== undefined) payload.name = updates.name.trim();
+      if (updates.segment !== undefined) payload.segment = updates.segment.trim();
+      if (updates.whatsappPhone !== undefined) {
+        payload.whatsapp_phone = updates.whatsappPhone.trim();
+      } else if (updates.phone !== undefined) {
+        payload.whatsapp_phone = updates.phone.trim();
+      }
+      if (updates.description !== undefined) payload.description = updates.description.trim();
+      if (updates.address !== undefined) payload.address = updates.address.trim();
+      if (updates.coverageArea !== undefined) payload.coverage_area = updates.coverageArea.trim();
+      if (updates.locationNotes !== undefined) payload.location_notes = updates.locationNotes.trim();
+      if (updates.website !== undefined) payload.website = updates.website.trim();
+      if (updates.extraWebsites !== undefined) payload.extra_websites = updates.extraWebsites;
+      if (updates.email !== undefined) payload.email = updates.email.trim();
+      if (updates.bannerUrl !== undefined) payload.banner_url = updates.bannerUrl.trim();
+      if (updates.businessHours !== undefined) payload.business_hours = updates.businessHours;
+
+      const { error } = await supabase
+        .from('accounts')
+        .update(payload)
+        .eq('id', currentAccount.id);
+
+      if (error) {
+        console.error('[Supabase] Erro ao atualizar public.accounts:', error.message);
+        return { success: false, error: error.message };
+      }
+
+      return { success: true };
+    } catch (err: any) {
+      console.error('[Supabase] Falha ao atualizar public.accounts:', err);
+      return { success: false, error: err?.message || 'Erro ao persistir dados da empresa.' };
+    }
   };
 
-  // Cadastro de nova empresa com senha obrigatória: grava no Supabase (accounts + account_users + auth.users)
+  // Cadastro de nova empresa: supabase.auth.signUp() -> supabase.rpc('create_new_account') -> hidratação
   const registerAccount = async (
     accountName: string,
     segment: string,
@@ -523,59 +593,114 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     password: string
   ): Promise<{ success: boolean; account?: Account; error?: string }> => {
     const cleanEmail = email.trim().toLowerCase();
+    const cleanAdminName = adminName.trim() || 'Administrador';
+    const cleanCompanyName = accountName.trim();
+    const cleanSegment = segment.trim() || 'Serviços & Atendimento';
 
     try {
-      const res = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          companyName: accountName.trim(),
-          companySegment: segment.trim() || 'Serviços & Atendimento',
-          adminName: adminName.trim() || 'Administrador',
-          email: cleanEmail,
-          password: password,
-        }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-
-      if (res.ok && data.account && data.user) {
-        const registeredAcc: Account = {
-          id: data.account.id,
-          name: data.account.name,
-          slug: data.account.slug,
-          segment: data.account.segment,
-          whatsappPhone: data.account.whatsappPhone || '',
-          plan: data.account.plan || 'Plano Pro Omnichannel',
-          createdAt: data.account.createdAt,
-        };
-
-        const registeredUser: AuthUser = {
-          id: data.user.id,
-          name: data.user.name,
-          email: data.user.email,
-          role: data.user.role || 'admin',
-          accountId: registeredAcc.id,
-          accountName: registeredAcc.name,
-        };
-
-        // O novo usuário vê APENAS a sua própria empresa (isolamento rigoroso)
-        setAvailableAccounts([registeredAcc]);
-        setCurrentAccount(registeredAcc);
-        setUser(registeredUser);
-
-        return { success: true, account: registeredAcc };
-      } else {
+      await ensureSupabaseConfig();
+      if (!isSupabaseConfigured) {
         return {
           success: false,
-          error: data.error || 'Erro ao realizar cadastro da empresa.',
+          error: 'Serviço de autenticação não configurado no cliente.',
         };
       }
+
+      // 1. Criar usuário no Supabase Auth com senha
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email: cleanEmail,
+        password: password,
+        options: {
+          data: {
+            name: cleanAdminName,
+          },
+        },
+      });
+
+      if (signUpError) {
+        let msg = signUpError.message;
+        if (msg.includes('already registered') || msg.includes('already been registered')) {
+          msg = 'Este e-mail já está cadastrado. Por favor, faça login ou utilize outro e-mail.';
+        } else if (msg.includes('Password should be at least')) {
+          msg = 'A senha de acesso deve ter pelo menos 6 caracteres.';
+        }
+        return {
+          success: false,
+          error: msg,
+        };
+      }
+
+      const authUser = signUpData?.user;
+      if (!authUser) {
+        return {
+          success: false,
+          error: 'Não foi possível registrar o usuário no serviço de autenticação.',
+        };
+      }
+
+      // Se a confirmação de e-mail estiver ativa no projeto Supabase, a sessão vem nula
+      if (!signUpData.session) {
+        return {
+          success: false,
+          error: 'Cadastro criado! A confirmação de e-mail está ativada. Por favor, verifique sua caixa de entrada e clique no link de ativação antes de acessar.',
+        };
+      }
+
+      // 2. Chamar a RPC transacional create_new_account com privilégios seguros
+      const { data: rpcResult, error: rpcError } = await supabase.rpc('create_new_account', {
+        p_company_name: cleanCompanyName,
+        p_company_segment: cleanSegment,
+        p_admin_name: cleanAdminName,
+      });
+
+      if (rpcError) {
+        console.error('[Supabase] Erro na RPC create_new_account:', rpcError);
+        return {
+          success: false,
+          error: rpcError.message || 'Erro ao inicializar empresa e vincular gestor.',
+        };
+      }
+
+      // 3. Formatar os dados da nova empresa e do gestor retornados pela RPC
+      const rawAccount = rpcResult?.account || {};
+      const rawUser = rpcResult?.user || {};
+
+      const registeredAcc: Account = {
+        id: rawAccount.id || authUser.id,
+        name: rawAccount.name || cleanCompanyName,
+        slug: rawAccount.slug || 'empresa',
+        segment: rawAccount.segment || cleanSegment,
+        whatsappPhone: rawAccount.whatsapp_phone || rawAccount.whatsappPhone || '',
+        plan: rawAccount.plan || 'Plano Pro Omnichannel',
+        createdAt: rawAccount.createdAt || new Date().toISOString(),
+      };
+
+      const registeredUser: AuthUser = {
+        id: rawUser.id || authUser.id,
+        name: rawUser.name || cleanAdminName,
+        email: rawUser.email || cleanEmail,
+        role: rawUser.role || 'admin',
+        accountId: registeredAcc.id,
+        accountName: registeredAcc.name,
+      };
+
+      // 4. Hidratação imediata do estado da aplicação (isolamento multi-tenant restrito ao novo tenant)
+      setAvailableAccounts([registeredAcc]);
+      setCurrentAccount(registeredAcc);
+      setUser(registeredUser);
+
+      try {
+        localStorage.setItem(STORAGE_KEY_ACCOUNT, JSON.stringify(registeredAcc));
+        localStorage.setItem(STORAGE_KEY_ALL_ACCOUNTS, JSON.stringify([registeredAcc]));
+        localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(registeredUser));
+      } catch {}
+
+      return { success: true, account: registeredAcc };
     } catch (err: any) {
-      console.warn('Erro ao chamar /api/auth/register:', err);
+      console.error('[Supabase] Falha no fluxo de cadastro:', err);
       return {
         success: false,
-        error: 'Erro de conexão ao registrar empresa.',
+        error: err?.message || 'Erro inesperado ao registrar empresa. Tente novamente.',
       };
     }
   };

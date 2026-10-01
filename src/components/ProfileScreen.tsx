@@ -29,6 +29,19 @@ import { AuthUser } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabase';
 
+const DAY_KEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as const;
+type DayKey = (typeof DAY_KEYS)[number];
+
+const DAY_LABELS: Record<DayKey, string> = {
+  monday: 'Segunda-feira',
+  tuesday: 'Terça-feira',
+  wednesday: 'Quarta-feira',
+  thursday: 'Quinta-feira',
+  friday: 'Sexta-feira',
+  saturday: 'Sábado',
+  sunday: 'Domingo',
+};
+
 interface ProfileScreenProps {
   darkMode: boolean;
   onClose: () => void;
@@ -65,29 +78,29 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [isSaving, setIsSaving] = useState(false);
 
   // E-mail de login autenticado (Exclusivo do Supabase Auth - Read-only)
-  const authEmail = authUser?.email || user?.email || 'usuario@autenticado.com';
+  const authEmail = authUser?.email || 'usuario@autenticado.com';
 
-  // 2. DADOS EMPRESARIAIS (Tabela: public.accounts - Próxima Etapa)
+  // 2. DADOS EMPRESARIAIS (Persistidos em public.accounts para a empresa ativa)
   const [commercialName, setCommercialName] = useState(
-    user?.commercialName || currentAccount?.name || ''
+    currentAccount?.name || ''
   );
-  const [description, setDescription] = useState(
-    user?.description || ''
-  );
-  const [address, setAddress] = useState(user?.address || '');
+  const [description, setDescription] = useState(currentAccount?.description || '');
+  const [address, setAddress] = useState(currentAccount?.address || '');
   const [coverageArea, setCoverageArea] = useState(
-    user?.coverageArea || 'Localização exata'
+    currentAccount?.coverageArea || 'Localização exata'
   );
   const [locationNotes, setLocationNotes] = useState(
-    user?.locationNotes || ''
+    currentAccount?.locationNotes || ''
   );
   const [category, setCategory] = useState(
-    user?.category || currentAccount?.segment || 'Serviço de automação'
+    currentAccount?.segment || 'Serviços & Atendimento'
   );
   const [website, setWebsite] = useState(
-    user?.website || 'https://app.monarcahub.com'
+    currentAccount?.website || 'https://app.monarcahub.com'
   );
-  const [extraWebsites, setExtraWebsites] = useState<string[]>([]);
+  const [extraWebsites, setExtraWebsites] = useState<string[]>(
+    Array.isArray(currentAccount?.extraWebsites) ? currentAccount.extraWebsites : []
+  );
   
   const accountEmail = currentAccount?.email || '';
   const accountPhone =
@@ -97,9 +110,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
   const [companyEmail, setCompanyEmail] = useState(accountEmail);
   const [companyPhone, setCompanyPhone] = useState(accountPhone);
-  const [bannerUrl, setBannerUrl] = useState<string>(
-    user?.bannerUrl || ''
+  const [bannerUrl, setBannerUrl] = useState<string>(currentAccount?.bannerUrl || '');
+  const [businessHours, setBusinessHours] = useState<Record<string, { enabled: boolean; open: string; close: string }>>(
+    currentAccount?.businessHours && typeof currentAccount.businessHours === 'object'
+      ? currentAccount.businessHours
+      : {}
   );
+  const [isHoursModalOpen, setIsHoursModalOpen] = useState(false);
+  const [isUploadingBanner, setIsUploadingBanner] = useState(false);
 
   // Sincroniza dados pessoais assim que authUser for hidratado
   useEffect(() => {
@@ -113,19 +131,41 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     }
   }, [authUser]);
 
-  // Sincroniza se os dados de contato da conta empresarial mudarem
+  // Sincroniza se os dados da empresa ativa (currentAccount) mudarem
   useEffect(() => {
-    if (currentAccount?.email) {
-      setCompanyEmail(currentAccount.email);
-    }
-    const phoneVal = currentAccount?.whatsappPhone || currentAccount?.phone;
-    if (phoneVal) {
+    if (currentAccount?.id) {
+      if (currentAccount.name !== undefined) setCommercialName(currentAccount.name);
+      if (currentAccount.segment !== undefined) setCategory(currentAccount.segment);
+      const phoneVal = currentAccount.whatsappPhone || currentAccount.phone || '';
       setCompanyPhone(phoneVal);
+      if (currentAccount.email !== undefined) setCompanyEmail(currentAccount.email);
+      if (currentAccount.description !== undefined) setDescription(currentAccount.description);
+      if (currentAccount.address !== undefined) setAddress(currentAccount.address);
+      if (currentAccount.coverageArea !== undefined) setCoverageArea(currentAccount.coverageArea);
+      if (currentAccount.locationNotes !== undefined) setLocationNotes(currentAccount.locationNotes);
+      if (currentAccount.website !== undefined) setWebsite(currentAccount.website);
+      if (Array.isArray(currentAccount.extraWebsites)) setExtraWebsites(currentAccount.extraWebsites);
+      if (currentAccount.bannerUrl !== undefined) setBannerUrl(currentAccount.bannerUrl);
+      if (currentAccount.businessHours && typeof currentAccount.businessHours === 'object') {
+        setBusinessHours(currentAccount.businessHours);
+      }
     }
-    if (currentAccount?.name) {
-      setCommercialName((prev) => prev || currentAccount.name);
-    }
-  }, [currentAccount]);
+  }, [
+    currentAccount?.id,
+    currentAccount?.name,
+    currentAccount?.segment,
+    currentAccount?.whatsappPhone,
+    currentAccount?.phone,
+    currentAccount?.email,
+    currentAccount?.description,
+    currentAccount?.address,
+    currentAccount?.coverageArea,
+    currentAccount?.locationNotes,
+    currentAccount?.website,
+    currentAccount?.extraWebsites,
+    currentAccount?.bannerUrl,
+    currentAccount?.businessHours,
+  ]);
 
   // Modals & UI helpers
   const [isAvatarModalOpen, setIsAvatarModalOpen] = useState(false);
@@ -146,7 +186,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     }, 3500);
   };
 
-  // Salvar dados: grava SOMENTE dados pessoais no Supabase public.profiles
+  // Salvar dados: grava dados pessoais em public.profiles e dados empresariais em public.accounts
   const saveAll = async (extraUpdates?: Partial<AuthUser>) => {
     setIsSaving(true);
     try {
@@ -161,25 +201,39 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         ...extraUpdates,
       });
 
-      // 2. Dados transitórios de contato da conta da empresa
-      if (updateCurrentAccount) {
-        updateCurrentAccount({
-          email: companyEmail,
-          phone: companyPhone,
-          whatsappPhone: companyPhone,
+      // 2. Gravar em public.accounts os dados empresariais correspondentes
+      if (updateCurrentAccount && currentAccount?.id) {
+        const accResult = await updateCurrentAccount({
+          name: commercialName.trim() || currentAccount.name,
+          segment: category.trim() || currentAccount.segment,
+          whatsappPhone: companyPhone.trim(),
+          phone: companyPhone.trim(),
+          email: companyEmail.trim(),
+          description: description.trim(),
+          address: address.trim(),
+          coverageArea: coverageArea.trim(),
+          locationNotes: locationNotes.trim(),
+          website: website.trim(),
+          extraWebsites: extraWebsites.map((s) => s.trim()).filter(Boolean),
+          bannerUrl: bannerUrl.trim(),
+          businessHours: businessHours,
         });
+
+        if (accResult && !accResult.success) {
+          console.warn('[ProfileScreen] Aviso ao salvar empresa no banco:', accResult.error);
+        }
       }
 
-      showToast('Perfil salvo com sucesso!');
+      showToast('Perfil e dados da empresa salvos com sucesso!');
     } catch (err: any) {
-      console.error('Erro ao salvar perfil pessoal:', err);
+      console.error('Erro ao salvar perfil e empresa:', err);
       showToast('Erro ao salvar perfil. Tente novamente.');
     } finally {
       setIsSaving(false);
     }
   };
 
-  // Upload de arquivos: integra avatar ao Supabase Storage (bucket 'avatar')
+  // Upload de arquivos: integra avatar (bucket avatar) e foto de capa (bucket images)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, isBanner = false) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -189,14 +243,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
       return;
     }
 
-    if (!isBanner) {
-      // Validação estrita de formato para avatar: apenas JPEG, PNG e WEBP
-      const validTypes = ['image/jpeg', 'image/png', 'image/webp'];
-      if (!validTypes.includes(file.type)) {
-        showToast('Formato não permitido. Selecione apenas imagens JPG, PNG ou WEBP.');
-        return;
-      }
+    // Validação estrita de formato: apenas JPEG, PNG e WEBP
+    const validTypes = ['image/jpeg', 'image/png', 'image/webp'];
+    if (!validTypes.includes(file.type)) {
+      showToast('Formato não permitido. Selecione apenas imagens JPG, PNG ou WEBP.');
+      return;
+    }
 
+    if (!isBanner) {
       const activeUserId = authUser?.id || user?.id;
       if (!activeUserId) {
         showToast('Erro: Usuário não autenticado.');
@@ -246,15 +300,56 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
         if (fileInputRef.current) fileInputRef.current.value = '';
       }
     } else {
-      // Foto de capa da empresa (mantida em state temporário até Etapa 2)
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = reader.result as string;
-        setBannerUrl(dataUrl);
+      // Upload de capa empresarial: bucket 'images/{account_id}/business/banner-{timestamp}.{ext}'
+      if (!currentAccount?.id) {
+        showToast('Erro: Nenhuma empresa ativa selecionada.');
+        return;
+      }
+
+      setIsUploadingBanner(true);
+      try {
+        let ext = 'jpg';
+        if (file.type === 'image/png') ext = 'png';
+        else if (file.type === 'image/webp') ext = 'webp';
+        else if (file.type === 'image/jpeg') {
+          const parts = file.name.split('.');
+          const realExt = parts.length > 1 ? parts.pop()?.toLowerCase() : 'jpg';
+          ext = realExt === 'jpeg' ? 'jpeg' : 'jpg';
+        }
+
+        const timestamp = Date.now();
+        const filePath = `${currentAccount.id}/business/banner-${timestamp}.${ext}`;
+
+        // Upload no bucket existente 'images'
+        const { error: uploadError } = await supabase.storage
+          .from('images')
+          .upload(filePath, file, {
+            cacheControl: '3600',
+            upsert: true,
+          });
+
+        if (uploadError) {
+          throw uploadError;
+        }
+
+        const { data: publicData } = supabase.storage
+          .from('images')
+          .getPublicUrl(filePath);
+
+        const newBannerUrl = publicData.publicUrl;
+        setBannerUrl(newBannerUrl);
+        if (updateCurrentAccount && currentAccount?.id) {
+          await updateCurrentAccount({ bannerUrl: newBannerUrl });
+        }
         setIsBannerModalOpen(false);
-        showToast('Foto de capa atualizada!');
-      };
-      reader.readAsDataURL(file);
+        showToast('Foto de capa da empresa atualizada com sucesso!');
+      } catch (err: any) {
+        console.error('Erro no upload de foto de capa:', err);
+        showToast(`Erro ao enviar capa: ${err?.message || 'Falha no envio da imagem'}`);
+      } finally {
+        setIsUploadingBanner(false);
+        if (bannerFileInputRef.current) bannerFileInputRef.current.value = '';
+      }
     }
   };
 
@@ -263,6 +358,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     const trimmed = urlInput.trim();
     if (isBanner) {
       setBannerUrl(trimmed);
+      if (updateCurrentAccount && currentAccount?.id) {
+        await updateCurrentAccount({ bannerUrl: trimmed });
+      }
       setIsBannerModalOpen(false);
       showToast('Foto de capa atualizada!');
     } else {
@@ -277,6 +375,9 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const handleRemovePhoto = async (isBanner = false) => {
     if (isBanner) {
       setBannerUrl('');
+      if (updateCurrentAccount && currentAccount?.id) {
+        await updateCurrentAccount({ bannerUrl: '' });
+      }
       setIsBannerModalOpen(false);
       showToast('Foto de capa removida.');
     } else {
@@ -826,24 +927,45 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 <Clock className="w-5 h-5" />
               </div>
               <div className="flex-1 space-y-2">
-                <span className="text-xs text-[#8696a0] font-medium block">Horário de atendimento</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-[#8696a0] font-medium block">Horário de atendimento</span>
+                  <button
+                    type="button"
+                    onClick={() => setIsHoursModalOpen(true)}
+                    className="text-xs font-semibold text-[#00a884] hover:underline cursor-pointer flex items-center gap-1"
+                  >
+                    <Edit2 className="w-3 h-3" />
+                    <span>Configurar horários</span>
+                  </button>
+                </div>
                 <div
-                  className={`p-3 rounded-xl border text-xs space-y-1.5 ${
-                    darkMode ? 'bg-[#182229] border-[#222e35]' : 'bg-[#f0f2f5] border-[#d1d7db]'
+                  onClick={() => setIsHoursModalOpen(true)}
+                  className={`p-3 rounded-xl border text-xs space-y-2 cursor-pointer transition-colors ${
+                    darkMode ? 'bg-[#182229] border-[#222e35] hover:border-[#00a884]/60' : 'bg-[#f0f2f5] border-[#d1d7db] hover:border-[#00a884]/60'
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium">Segunda a Sexta</span>
-                    <span className="text-[#00a884] font-semibold">08:00 - 18:00</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium">Sábado</span>
-                    <span className="text-[#8696a0]">Fechada</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium">Domingo</span>
-                    <span className="text-[#8696a0]">Fechada</span>
-                  </div>
+                  {Object.keys(businessHours).length === 0 ? (
+                    <div className="py-2 text-center text-[#8696a0]">
+                      <span>Nenhum horário definido. Clique para configurar a escala semanal.</span>
+                    </div>
+                  ) : (
+                    DAY_KEYS.map((key) => {
+                      const item = businessHours[key];
+                      const isEnabled = Boolean(item?.enabled);
+                      return (
+                        <div key={key} className="flex items-center justify-between">
+                          <span className="font-medium">{DAY_LABELS[key]}</span>
+                          {isEnabled ? (
+                            <span className="text-[#00a884] font-semibold">
+                              {item?.open || '08:00'} - {item?.close || '18:00'}
+                            </span>
+                          ) : (
+                            <span className="text-[#8696a0]">Fechada</span>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
             </div>
@@ -935,35 +1057,49 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 </div>
 
                 {extraWebsites.map((site, index) => (
-                  <div
-                    key={index}
-                    className={`relative border rounded-xl px-3.5 pt-3 pb-2 transition-colors ${
-                      darkMode
-                        ? 'border-[#2a3942] focus-within:border-[#00a884] bg-[#111b21]'
-                        : 'border-[#d1d7db] focus-within:border-[#00a884] bg-white'
-                    }`}
-                  >
-                    <label
-                      className={`absolute -top-2.5 left-3 px-1 text-[11px] font-medium ${
-                        darkMode ? 'bg-[#111b21] text-[#8696a0]' : 'bg-white text-[#54656f]'
+                  <div key={index} className="flex items-center gap-2">
+                    <div
+                      className={`relative flex-1 border rounded-xl px-3.5 pt-3 pb-2 transition-colors ${
+                        darkMode
+                          ? 'border-[#2a3942] focus-within:border-[#00a884] bg-[#111b21]'
+                          : 'border-[#d1d7db] focus-within:border-[#00a884] bg-white'
                       }`}
                     >
-                      Outro link
-                    </label>
-                    <input
-                      type="url"
-                      value={site}
-                      onChange={(e) => {
-                        const copy = [...extraWebsites];
-                        copy[index] = e.target.value;
+                      <label
+                        className={`absolute -top-2.5 left-3 px-1 text-[11px] font-medium ${
+                          darkMode ? 'bg-[#111b21] text-[#8696a0]' : 'bg-white text-[#54656f]'
+                        }`}
+                      >
+                        Outro link {index + 1}
+                      </label>
+                      <input
+                        type="url"
+                        value={site}
+                        onChange={(e) => {
+                          const copy = [...extraWebsites];
+                          copy[index] = e.target.value;
+                          setExtraWebsites(copy);
+                        }}
+                        placeholder="https://..."
+                        className="w-full bg-transparent outline-none text-sm"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const copy = extraWebsites.filter((_, i) => i !== index);
                         setExtraWebsites(copy);
                       }}
-                      className="w-full bg-transparent outline-none text-sm"
-                    />
+                      className="p-2.5 rounded-xl text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer shrink-0"
+                      title="Remover link"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
                   </div>
                 ))}
 
                 <button
+                  type="button"
                   onClick={() => setExtraWebsites([...extraWebsites, 'https://'])}
                   className="text-xs font-semibold text-[#00a884] hover:underline cursor-pointer flex items-center gap-1 pt-1"
                 >
@@ -1187,11 +1323,17 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 }`}
               >
                 <div className="w-10 h-10 rounded-full bg-[#00a884]/20 flex items-center justify-center text-[#00a884] shrink-0">
-                  <Upload className="w-5 h-5" />
+                  {isUploadingBanner ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : (
+                    <Upload className="w-5 h-5" />
+                  )}
                 </div>
                 <div className="text-left">
-                  <span className="font-semibold text-sm block">Carregar capa do computador</span>
-                  <span className="text-[11px] text-[#8696a0]">JPG ou PNG panorâmico</span>
+                  <span className="font-semibold text-sm block">
+                    {isUploadingBanner ? 'Enviando foto de capa...' : 'Carregar capa do computador'}
+                  </span>
+                  <span className="text-[11px] text-[#8696a0]">JPG, PNG ou WEBP (até 5MB)</span>
                 </div>
               </button>
 
@@ -1386,6 +1528,144 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             >
               Salvar status
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Configurar Horários de Atendimento (business_hours JSONB) */}
+      {isHoursModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 backdrop-blur-xs"
+          onClick={() => setIsHoursModalOpen(false)}
+        >
+          <div
+            className={`w-full max-w-lg rounded-2xl p-6 shadow-2xl border animate-in zoom-in-95 max-h-[90vh] flex flex-col ${
+              darkMode ? 'bg-[#222e35] border-[#2a3942] text-[#e9edef]' : 'bg-white border-[#e9edef] text-[#111b21]'
+            }`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b mb-4 shrink-0">
+              <div className="flex items-center gap-2">
+                <Clock className="w-5 h-5 text-[#00a884]" />
+                <h3 className="font-semibold text-base">Horários de atendimento</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsHoursModalOpen(false)}
+                className="p-1 rounded-full text-[#8696a0] hover:text-[#e9edef] cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-[#8696a0] mb-4 shrink-0">
+              Defina os dias e os intervalos de funcionamento da empresa. Dias desmarcados serão exibidos como "Fechada".
+            </p>
+
+            <div className="space-y-3 overflow-y-auto custom-scrollbar flex-1 pr-1">
+              {DAY_KEYS.map((key) => {
+                const currentDay = businessHours[key] || { enabled: false, open: '08:00', close: '18:00' };
+                return (
+                  <div
+                    key={key}
+                    className={`p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                      darkMode ? 'bg-[#111b21] border-[#2a3942]' : 'bg-[#f0f2f5] border-[#d1d7db]'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="checkbox"
+                        id={`check-${key}`}
+                        checked={Boolean(currentDay.enabled)}
+                        onChange={(e) => {
+                          const isChecked = e.target.checked;
+                          setBusinessHours((prev) => ({
+                            ...prev,
+                            [key]: {
+                              enabled: isChecked,
+                              open: currentDay.open || '08:00',
+                              close: currentDay.close || '18:00',
+                            },
+                          }));
+                        }}
+                        className="w-4 h-4 rounded text-[#00a884] focus:ring-[#00a884] cursor-pointer"
+                      />
+                      <label htmlFor={`check-${key}`} className="text-xs font-semibold cursor-pointer select-none">
+                        {DAY_LABELS[key]}
+                      </label>
+                    </div>
+
+                    {currentDay.enabled ? (
+                      <div className="flex items-center gap-2 text-xs">
+                        <span>Das</span>
+                        <input
+                          type="time"
+                          value={currentDay.open || '08:00'}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setBusinessHours((prev) => ({
+                              ...prev,
+                              [key]: {
+                                ...currentDay,
+                                open: val,
+                              },
+                            }));
+                          }}
+                          className={`px-2 py-1 rounded-lg border text-xs outline-none ${
+                            darkMode ? 'bg-[#202c33] border-[#2a3942] text-white' : 'bg-white border-[#d1d7db] text-black'
+                          }`}
+                        />
+                        <span>às</span>
+                        <input
+                          type="time"
+                          value={currentDay.close || '18:00'}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setBusinessHours((prev) => ({
+                              ...prev,
+                              [key]: {
+                                ...currentDay,
+                                close: val,
+                              },
+                            }));
+                          }}
+                          className={`px-2 py-1 rounded-lg border text-xs outline-none ${
+                            darkMode ? 'bg-[#202c33] border-[#2a3942] text-white' : 'bg-white border-[#d1d7db] text-black'
+                          }`}
+                        />
+                      </div>
+                    ) : (
+                      <span className="text-xs text-[#8696a0] font-medium">Fechada</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="pt-4 border-t mt-4 flex justify-end gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsHoursModalOpen(false)}
+                className={`px-4 py-2 rounded-lg text-xs font-medium ${
+                  darkMode ? 'bg-[#182229] text-[#8696a0]' : 'bg-gray-100 text-gray-700'
+                }`}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (updateCurrentAccount && currentAccount?.id) {
+                    await updateCurrentAccount({ businessHours: businessHours });
+                  }
+                  setIsHoursModalOpen(false);
+                  showToast('Horários de atendimento atualizados com sucesso!');
+                }}
+                className="px-4 py-2 rounded-lg text-xs font-semibold bg-[#00a884] text-white hover:bg-[#02906f] cursor-pointer"
+              >
+                Salvar Horários
+              </button>
+            </div>
           </div>
         </div>
       )}

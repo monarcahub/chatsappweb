@@ -159,14 +159,14 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
 
   // Configurações do Cérebro da IA (tabela cerebro_ia)
   const [brainConfig, setBrainConfig] = useState<CerebroIaConfig>({
-    business_name: account?.name || 'MonarcaHub Matriz',
-    address: 'Av. Paulista, 1000 - São Paulo, SP',
-    opening_hours: 'Segunda a Sexta, das 08h às 19h. Sábados das 09h às 14h.',
-    pricing_info: 'Consulte nossa tabela de planos e serviços. Aceitamos PIX e Cartão de Crédito em até 12x.',
-    faq_text: 'Como funciona o atendimento? Resposta: Centralizamos seus canais com automação e IA inteligente.',
+    business_name: account?.name || '',
+    address: account?.address || '',
+    opening_hours: '',
+    pricing_info: '',
+    faq_text: '',
     tone_of_voice: 'Amigável, acolhedor e consultivo',
-    pix_key: 'financeiro@monarcahub.com',
-    observations: 'Priorizar respostas rápidas em menos de 10 segundos. Se o cliente tiver urgência, acionar plantão humano.',
+    pix_key: '',
+    observations: '',
     is_active: isAIActiveGlobal !== undefined ? isAIActiveGlobal : true,
     allow_calls: false,
     reply_groups: false,
@@ -179,8 +179,8 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
     ai_active_instagram: true,
     instagram_status: 'connected',
     use_official_api_coexistencia: false,
-    test_number: '+55 51 9999-9999',
-    extra_users_count: 5,
+    test_number: '',
+    extra_users_count: 0,
   });
 
   const [isLoadingConfig, setIsLoadingConfig] = useState(false);
@@ -339,10 +339,11 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
             setKnowledgeList(cfg.knowledge_base);
           }
         } else {
-          // Atualiza o nome do negócio com o nome da empresa selecionada
+          // Atualiza o nome e endereço do negócio com os dados da empresa selecionada
           setBrainConfig((prev) => ({
             ...prev,
             business_name: account.name || prev.business_name,
+            address: account.address || prev.address,
           }));
         }
       } catch (err) {

@@ -14,6 +14,14 @@ export interface Account {
   plan?: string;
   logoUrl?: string;
   createdAt?: string;
+  description?: string;
+  address?: string;
+  coverageArea?: string;
+  locationNotes?: string;
+  website?: string;
+  extraWebsites?: string[];
+  bannerUrl?: string;
+  businessHours?: Record<string, { enabled: boolean; open: string; close: string }>;
 }
 
 // Perfil do Atendente / Usuário Logado

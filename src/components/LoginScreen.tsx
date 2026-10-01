@@ -63,6 +63,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
 
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLoading) return;
     setRegisterError(null);
 
     if (!newCompanyName.trim() || !newEmail.trim()) {
