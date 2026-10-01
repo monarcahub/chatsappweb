@@ -11,7 +11,7 @@ interface AuthContextType {
   logout: () => void;
   switchAccount: (accountId: string) => void;
   registerAccount: (accountName: string, segment: string, adminName: string, email: string, password: string) => Promise<{ success: boolean; account?: Account; error?: string }>;
-  updateUserProfile: (updates: Partial<AuthUser>) => void;
+  updateUserProfile: (updates: Partial<AuthUser>) => Promise<void> | void;
   updateCurrentAccount: (updates: Partial<Account>) => void;
 }
 
@@ -164,7 +164,63 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     };
 
+    const syncUserProfileFromDb = async () => {
+      if (!user?.id) return;
+      try {
+        await ensureSupabaseConfig();
+        if (!isSupabaseConfigured) return;
+
+        const { data: profileRow, error: profileErr } = await supabase
+          .from('profiles')
+          .select('id, name, phone, role_title, bio, mood, avatar_url')
+          .eq('id', user.id)
+          .maybeSingle();
+
+        if (profileRow) {
+          setUser((prev) => {
+            if (!prev) return null;
+            return {
+              ...prev,
+              name: profileRow.name || prev.name,
+              phone: profileRow.phone ?? prev.phone,
+              role_title: profileRow.role_title ?? prev.role_title,
+              bio: profileRow.bio ?? prev.bio,
+              mood: profileRow.mood || prev.mood || 'Disponível',
+              avatarUrl: profileRow.avatar_url ?? prev.avatarUrl,
+            };
+          });
+        } else if (!profileErr) {
+          // Se ainda não existir registro em profiles para este auth.uid(), cria inicial sem email
+          const fallbackName = user.name || 'Usuário';
+          const { data: newProfile } = await supabase
+            .from('profiles')
+            .insert({
+              id: user.id,
+              name: fallbackName,
+              mood: 'Disponível',
+            })
+            .select('id, name, phone, role_title, bio, mood, avatar_url')
+            .maybeSingle();
+
+          if (newProfile) {
+            setUser((prev) => {
+              if (!prev) return null;
+              return {
+                ...prev,
+                name: newProfile.name || prev.name,
+                avatarUrl: newProfile.avatar_url ?? prev.avatarUrl,
+                mood: newProfile.mood || prev.mood,
+              };
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('Erro ao sincronizar public.profiles:', err);
+      }
+    };
+
     syncUserAccountsFromDb();
+    syncUserProfileFromDb();
   }, [user?.id]);
 
   // Login com verificação inteligente de e-mail e senha no Supabase (API Serverless + Direct Client Fallback)
@@ -286,18 +342,58 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           createdAt: accRow.created_at,
         }));
 
+      // 3. Carregar ou criar perfil pessoal em public.profiles usando o authUserId
+      let profileData: any = null;
+      try {
+        const { data: existingProfile, error: profSelectErr } = await supabase
+          .from('profiles')
+          .select('id, name, phone, role_title, bio, mood, avatar_url')
+          .eq('id', authUserId)
+          .maybeSingle();
+
+        if (existingProfile) {
+          profileData = existingProfile;
+        } else if (!profSelectErr) {
+          const initialName =
+            userRows?.[0]?.name ||
+            authData.user?.user_metadata?.name ||
+            cleanEmail.split('@')[0] ||
+            'Usuário';
+
+          const { data: createdProfile } = await supabase
+            .from('profiles')
+            .insert({
+              id: authUserId,
+              name: initialName,
+              mood: 'Disponível',
+            })
+            .select('id, name, phone, role_title, bio, mood, avatar_url')
+            .maybeSingle();
+
+          if (createdProfile) {
+            profileData = createdProfile;
+          }
+        }
+      } catch (profErr) {
+        console.warn('Erro ao consultar public.profiles no login:', profErr);
+      }
+
       if (validAccounts.length > 0) {
         const primaryAcc = validAccounts[0];
         const primaryUserRow = userRows?.find((r: any) => r.accounts?.id === primaryAcc.id) || userRows?.[0];
 
         const authUser: AuthUser = {
           id: authUserId,
-          name: primaryUserRow?.name || authData.user?.user_metadata?.name || 'Administrador',
-          email: primaryUserRow?.email || cleanEmail,
+          name: profileData?.name || primaryUserRow?.name || authData.user?.user_metadata?.name || 'Administrador',
+          email: authData.user?.email || primaryUserRow?.email || cleanEmail,
           role: primaryUserRow?.role || 'admin',
           accountId: primaryAcc.id,
           accountName: primaryAcc.name,
-          avatarUrl: primaryUserRow?.avatar_url,
+          phone: profileData?.phone,
+          role_title: profileData?.role_title,
+          bio: profileData?.bio,
+          mood: profileData?.mood || 'Disponível',
+          avatarUrl: profileData?.avatar_url,
         };
 
         const options: Account[] = [...validAccounts];
@@ -323,11 +419,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // NÃO atribui nenhuma empresa automaticamente (evita vazamento de tenant entre usuários)
       const unlinkedUser: AuthUser = {
         id: authUserId,
-        name: authData.user?.user_metadata?.name || cleanEmail.split('@')[0],
-        email: cleanEmail,
+        name: profileData?.name || authData.user?.user_metadata?.name || cleanEmail.split('@')[0],
+        email: authData.user?.email || cleanEmail,
         role: 'agent',
         accountId: '',
         accountName: 'Nenhuma empresa vinculada',
+        phone: profileData?.phone,
+        role_title: profileData?.role_title,
+        bio: profileData?.bio,
+        mood: profileData?.mood || 'Disponível',
+        avatarUrl: profileData?.avatar_url,
       };
 
       setAvailableAccounts([]);
@@ -363,14 +464,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Atualizar perfil do usuário logado (ex: foto de perfil personalizada)
-  const updateUserProfile = (updates: Partial<AuthUser>) => {
+  // Atualizar perfil do usuário logado (persistido em public.profiles)
+  const updateUserProfile = async (updates: Partial<AuthUser>) => {
     setUser((prev) => {
       if (!prev) return null;
       const updated = { ...prev, ...updates };
       localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(updated));
       return updated;
     });
+
+    const targetUserId = user?.id;
+    if (!targetUserId) return;
+
+    try {
+      await ensureSupabaseConfig();
+      const payload: Record<string, any> = {
+        id: targetUserId,
+        updated_at: new Date().toISOString(),
+      };
+
+      if (updates.name !== undefined) payload.name = updates.name;
+      if (updates.phone !== undefined) payload.phone = updates.phone;
+      if (updates.role_title !== undefined) payload.role_title = updates.role_title;
+      if (updates.bio !== undefined) payload.bio = updates.bio;
+      if (updates.mood !== undefined) payload.mood = updates.mood;
+      if (updates.avatarUrl !== undefined) payload.avatar_url = updates.avatarUrl;
+
+      const { error } = await supabase
+        .from('profiles')
+        .upsert(payload);
+
+      if (error) {
+        console.error('[Supabase] Erro ao salvar em public.profiles:', error.message);
+      }
+    } catch (err) {
+      console.error('[Supabase] Falha ao atualizar public.profiles:', err);
+    }
   };
 
   // Atualizar dados da conta atual (ex: telefone, email, nome)

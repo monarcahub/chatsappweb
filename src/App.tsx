@@ -353,9 +353,9 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               onSwitchAccount={onSwitchAccount}
               onLogout={onLogout}
               onOpenSettings={() =>
-                setActiveRailTab(activeRailTab === 'settings' ? 'chats' : 'settings')
+                setActiveRailTab((activeRailTab as string) === 'settings' ? 'chats' : 'settings')
               }
-              isSettingsOpen={activeRailTab === 'settings'}
+              isSettingsOpen={(activeRailTab as string) === 'settings'}
               onOpenProfile={() => setIsProfileOpen(true)}
               onOpenCRM={handleToggleCRM}
               onMarkAllAsRead={markAllAsRead}
@@ -455,7 +455,14 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
       <NewChatModal
         isOpen={isNewChatModalOpen}
         onClose={() => setIsNewChatModalOpen(false)}
-        onSimulateIncoming={simulateWebhookIncoming}
+        onSimulateIncoming={(data) => {
+          simulateWebhookIncoming({
+            channel: data.channel,
+            senderName: data.name,
+            senderPhoneOrUser: data.phone || '+55 11 99999-9999',
+            messageText: data.messageText,
+          });
+        }}
         darkMode={darkMode}
       />
 

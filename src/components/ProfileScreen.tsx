@@ -18,10 +18,16 @@ import {
   Clock,
   ExternalLink,
   Smile,
-  Edit2
+  Edit2,
+  User,
+  Briefcase,
+  FileText,
+  Loader2,
+  ShieldCheck,
 } from 'lucide-react';
 import { AuthUser } from '../types';
 import { useAuth } from '../context/AuthContext';
+import { supabase } from '../lib/supabase';
 
 interface ProfileScreenProps {
   darkMode: boolean;
@@ -36,12 +42,37 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 }) => {
   const { user: authUser, currentAccount, updateUserProfile, updateCurrentAccount } = useAuth();
 
-  // Profile data states initialized with user values or screenshot defaults
+  // 1. DADOS PESSOAIS DO USUÁRIO (Tabela: public.profiles)
+  const [userName, setUserName] = useState(
+    authUser?.name || user?.name || ''
+  );
+  const [userPhone, setUserPhone] = useState(
+    authUser?.phone || user?.phone || ''
+  );
+  const [roleTitle, setRoleTitle] = useState(
+    authUser?.role_title || user?.role_title || ''
+  );
+  const [userBio, setUserBio] = useState(
+    authUser?.bio || user?.bio || ''
+  );
+  const [mood, setMood] = useState(
+    authUser?.mood || user?.mood || 'Disponível'
+  );
+  const [avatarUrl, setAvatarUrl] = useState<string>(
+    authUser?.avatarUrl || user?.avatarUrl || ''
+  );
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // E-mail de login autenticado (Exclusivo do Supabase Auth - Read-only)
+  const authEmail = authUser?.email || user?.email || 'usuario@autenticado.com';
+
+  // 2. DADOS EMPRESARIAIS (Tabela: public.accounts - Próxima Etapa)
   const [commercialName, setCommercialName] = useState(
-    user?.commercialName || user?.name || 'Alex Belmonte M'
+    user?.commercialName || currentAccount?.name || ''
   );
   const [description, setDescription] = useState(
-    user?.description || 'Fundador da Monarca Hub'
+    user?.description || ''
   );
   const [address, setAddress] = useState(user?.address || '');
   const [coverageArea, setCoverageArea] = useState(
@@ -51,45 +82,50 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     user?.locationNotes || ''
   );
   const [category, setCategory] = useState(
-    user?.category || 'Serviço de automação'
+    user?.category || currentAccount?.segment || 'Serviço de automação'
   );
   const [website, setWebsite] = useState(
     user?.website || 'https://app.monarcahub.com'
   );
   const [extraWebsites, setExtraWebsites] = useState<string[]>([]);
   
-  // Puxar email e telefone dos dados de contato da conta atual / usuário autenticado
-  const accountEmail = currentAccount?.email || user?.email || authUser?.email || 'alex@monarcahub.com';
+  const accountEmail = currentAccount?.email || '';
   const accountPhone =
     currentAccount?.whatsappPhone ||
     currentAccount?.phone ||
-    user?.phone ||
-    authUser?.phone ||
-    '+55 55 9680-4923';
+    '';
 
-  const [email, setEmail] = useState(accountEmail);
-  const [phone, setPhone] = useState(accountPhone);
-  const [mood, setMood] = useState(user?.mood || 'Current mood');
-
-  // Sincroniza se os dados de contato da conta mudarem
-  useEffect(() => {
-    if (currentAccount?.email) {
-      setEmail(currentAccount.email);
-    }
-    const phoneVal = currentAccount?.whatsappPhone || currentAccount?.phone;
-    if (phoneVal) {
-      setPhone(phoneVal);
-    }
-  }, [currentAccount]);
-
-  // Avatar & Banner states
-  const [avatarUrl, setAvatarUrl] = useState<string>(
-    user?.avatarUrl ||
-      'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&auto=format&fit=crop&q=80'
-  );
+  const [companyEmail, setCompanyEmail] = useState(accountEmail);
+  const [companyPhone, setCompanyPhone] = useState(accountPhone);
   const [bannerUrl, setBannerUrl] = useState<string>(
     user?.bannerUrl || ''
   );
+
+  // Sincroniza dados pessoais assim que authUser for hidratado
+  useEffect(() => {
+    if (authUser) {
+      if (authUser.name) setUserName(authUser.name);
+      if (authUser.phone !== undefined) setUserPhone(authUser.phone || '');
+      if (authUser.role_title !== undefined) setRoleTitle(authUser.role_title || '');
+      if (authUser.bio !== undefined) setUserBio(authUser.bio || '');
+      if (authUser.mood) setMood(authUser.mood);
+      if (authUser.avatarUrl !== undefined) setAvatarUrl(authUser.avatarUrl || '');
+    }
+  }, [authUser]);
+
+  // Sincroniza se os dados de contato da conta empresarial mudarem
+  useEffect(() => {
+    if (currentAccount?.email) {
+      setCompanyEmail(currentAccount.email);
+    }
+    const phoneVal = currentAccount?.whatsappPhone || currentAccount?.phone;
+    if (phoneVal) {
+      setCompanyPhone(phoneVal);
+    }
+    if (currentAccount?.name) {
+      setCommercialName((prev) => prev || currentAccount.name);
+    }
+  }, [currentAccount]);
 
   // Modals & UI helpers
   const [isAvatarModalOpen, setIsAvatarModalOpen] = useState(false);
@@ -107,93 +143,145 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     setToastMessage(msg);
     setTimeout(() => {
       setToastMessage(null);
-    }, 3000);
+    }, 3500);
   };
 
-  // Save changes to Auth context and Account contact info
-  const saveAll = (extraUpdates?: Partial<AuthUser>) => {
-    const updates: Partial<AuthUser> = {
-      name: commercialName,
-      commercialName,
-      description,
-      address,
-      coverageArea,
-      locationNotes,
-      category,
-      website,
-      email,
-      phone,
-      mood,
-      avatarUrl,
-      bannerUrl,
-      ...extraUpdates,
-    };
-    updateUserProfile(updates);
-
-    if (updateCurrentAccount) {
-      updateCurrentAccount({
-        email,
-        phone,
-        whatsappPhone: phone,
+  // Salvar dados: grava SOMENTE dados pessoais no Supabase public.profiles
+  const saveAll = async (extraUpdates?: Partial<AuthUser>) => {
+    setIsSaving(true);
+    try {
+      // 1. Gravar em public.profiles SOMENTE os dados pessoais
+      await updateUserProfile({
+        name: userName.trim() || 'Usuário',
+        phone: userPhone.trim(),
+        role_title: roleTitle.trim(),
+        bio: userBio.trim(),
+        mood: mood.trim() || 'Disponível',
+        avatarUrl: avatarUrl,
+        ...extraUpdates,
       });
-    }
 
-    showToast('Perfil e contatos da conta atualizados com sucesso!');
+      // 2. Dados transitórios de contato da conta da empresa
+      if (updateCurrentAccount) {
+        updateCurrentAccount({
+          email: companyEmail,
+          phone: companyPhone,
+          whatsappPhone: companyPhone,
+        });
+      }
+
+      showToast('Perfil pessoal salvo com sucesso no Supabase!');
+    } catch (err: any) {
+      console.error('Erro ao salvar perfil pessoal:', err);
+      showToast('Erro ao salvar perfil no banco.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
-  // Image upload handler (converts to base64 Data URL)
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>, isBanner = false) => {
+  // Upload de arquivos: integra avatar ao Supabase Storage (bucket 'avatar')
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>, isBanner = false) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     if (file.size > 5 * 1024 * 1024) {
-      alert('Por favor, selecione uma imagem de até 5MB.');
+      showToast('Por favor, selecione uma imagem de até 5MB.');
       return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      if (isBanner) {
+    if (!isBanner) {
+      // Validação estrita de formato para avatar: apenas JPEG, PNG e WEBP
+      const validTypes = ['image/jpeg', 'image/png', 'image/webp'];
+      if (!validTypes.includes(file.type)) {
+        showToast('Formato não permitido. Selecione apenas imagens JPG, PNG ou WEBP.');
+        return;
+      }
+
+      const activeUserId = authUser?.id || user?.id;
+      if (!activeUserId) {
+        showToast('Erro: Usuário não autenticado.');
+        return;
+      }
+
+      setIsUploadingAvatar(true);
+      try {
+        let ext = 'jpg';
+        if (file.type === 'image/png') ext = 'png';
+        else if (file.type === 'image/webp') ext = 'webp';
+        else if (file.type === 'image/jpeg') {
+          const parts = file.name.split('.');
+          const realExt = parts.length > 1 ? parts.pop()?.toLowerCase() : 'jpg';
+          ext = realExt === 'jpeg' ? 'jpeg' : 'jpg';
+        }
+
+        const timestamp = Date.now();
+        const filePath = `${activeUserId}/avatar-${timestamp}.${ext}`;
+
+        // Upload no bucket existente 'avatar'
+        const { error: uploadError } = await supabase.storage
+          .from('avatar')
+          .upload(filePath, file, {
+            cacheControl: '3600',
+            upsert: true,
+          });
+
+        if (uploadError) {
+          throw uploadError;
+        }
+
+        const { data: publicData } = supabase.storage
+          .from('avatar')
+          .getPublicUrl(filePath);
+
+        const newAvatarUrl = publicData.publicUrl;
+        setAvatarUrl(newAvatarUrl);
+        await updateUserProfile({ avatarUrl: newAvatarUrl });
+        setIsAvatarModalOpen(false);
+        showToast('Foto de perfil salva com sucesso no Supabase Storage!');
+      } catch (err: any) {
+        console.error('Erro no upload de avatar:', err);
+        showToast(`Erro ao enviar foto: ${err?.message || 'Falha no Storage'}`);
+      } finally {
+        setIsUploadingAvatar(false);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+    } else {
+      // Foto de capa da empresa (mantida em state temporário até Etapa 2)
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result as string;
         setBannerUrl(dataUrl);
-        saveAll({ bannerUrl: dataUrl });
         setIsBannerModalOpen(false);
         showToast('Foto de capa atualizada!');
-      } else {
-        setAvatarUrl(dataUrl);
-        saveAll({ avatarUrl: dataUrl });
-        setIsAvatarModalOpen(false);
-        showToast('Foto de perfil alterada com sucesso!');
-      }
-    };
-    reader.readAsDataURL(file);
+      };
+      reader.readAsDataURL(file);
+    }
   };
 
-  const handleApplyUrl = (isBanner = false) => {
+  const handleApplyUrl = async (isBanner = false) => {
     if (!urlInput.trim()) return;
+    const trimmed = urlInput.trim();
     if (isBanner) {
-      setBannerUrl(urlInput.trim());
-      saveAll({ bannerUrl: urlInput.trim() });
+      setBannerUrl(trimmed);
       setIsBannerModalOpen(false);
       showToast('Foto de capa atualizada!');
     } else {
-      setAvatarUrl(urlInput.trim());
-      saveAll({ avatarUrl: urlInput.trim() });
+      setAvatarUrl(trimmed);
+      await updateUserProfile({ avatarUrl: trimmed });
       setIsAvatarModalOpen(false);
       showToast('Foto de perfil alterada com sucesso!');
     }
     setUrlInput('');
   };
 
-  const handleRemovePhoto = (isBanner = false) => {
+  const handleRemovePhoto = async (isBanner = false) => {
     if (isBanner) {
       setBannerUrl('');
-      saveAll({ bannerUrl: '' });
       setIsBannerModalOpen(false);
       showToast('Foto de capa removida.');
     } else {
       setAvatarUrl('');
-      saveAll({ avatarUrl: '' });
+      await updateUserProfile({ avatarUrl: '' });
       setIsAvatarModalOpen(false);
       showToast('Foto de perfil removida.');
     }
@@ -226,18 +314,28 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
 
         <button
           onClick={() => saveAll()}
-          className="px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold bg-[#00a884] text-white hover:bg-[#02906f] transition-all cursor-pointer shadow-sm flex items-center gap-1.5"
+          disabled={isSaving}
+          className="px-4 py-1.5 rounded-lg text-xs sm:text-sm font-semibold bg-[#00a884] text-white hover:bg-[#02906f] transition-all cursor-pointer shadow-sm flex items-center gap-1.5 disabled:opacity-50"
         >
-          <Check className="w-4 h-4" />
-          <span>Salvar</span>
+          {isSaving ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span>Salvando...</span>
+            </>
+          ) : (
+            <>
+              <Check className="w-4 h-4" />
+              <span>Salvar Perfil</span>
+            </>
+          )}
         </button>
       </header>
 
-      {/* Hidden file inputs for local image upload */}
+      {/* Hidden file inputs for image upload */}
       <input
         type="file"
         ref={fileInputRef}
-        accept="image/*"
+        accept="image/jpeg,image/png,image/webp"
         className="hidden"
         onChange={(e) => handleFileUpload(e, false)}
       />
@@ -302,31 +400,39 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               <div className="relative group">
                 <div
                   onClick={() => setIsAvatarModalOpen(true)}
-                  className="w-24 h-24 sm:w-28 sm:h-28 rounded-full ring-4 ring-[#111b21] dark:ring-[#111b21] overflow-hidden bg-[#202c33] flex items-center justify-center shadow-xl cursor-pointer"
+                  className="w-24 h-24 sm:w-28 sm:h-28 rounded-full ring-4 ring-[#111b21] dark:ring-[#111b21] overflow-hidden bg-[#202c33] flex items-center justify-center shadow-xl cursor-pointer relative"
                 >
-                  {avatarUrl ? (
+                  {isUploadingAvatar ? (
+                    <div className="flex flex-col items-center justify-center gap-1 text-[#00a884]">
+                      <Loader2 className="w-7 h-7 animate-spin" />
+                      <span className="text-[9px] font-medium text-white">Salvando...</span>
+                    </div>
+                  ) : avatarUrl ? (
                     <img
                       src={avatarUrl}
-                      alt={commercialName}
+                      alt={userName || 'Avatar'}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
                     />
                   ) : (
                     <div className="w-full h-full bg-[#00a884] text-white flex items-center justify-center font-bold text-2xl">
-                      {commercialName.substring(0, 2).toUpperCase()}
+                      {(userName || 'U').substring(0, 2).toUpperCase()}
                     </div>
                   )}
 
                   {/* Camera overlay on hover */}
-                  <div className="absolute inset-0 bg-black/40 rounded-full flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                    <Camera className="w-6 h-6 text-white" />
-                    <span className="text-[10px] text-white font-medium mt-1">Mudar foto</span>
-                  </div>
+                  {!isUploadingAvatar && (
+                    <div className="absolute inset-0 bg-black/40 rounded-full flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Camera className="w-6 h-6 text-white" />
+                      <span className="text-[10px] text-white font-medium mt-1">Mudar foto</span>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* Botão [ 📷 Editar ] abaixo da foto de perfil (estilo screenshot) */}
+              {/* Botão [ 📷 Editar ] abaixo da foto de perfil */}
               <button
                 onClick={() => setIsAvatarModalOpen(true)}
+                disabled={isUploadingAvatar}
                 className={`mt-2.5 px-3 py-1 rounded-full text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer border ${
                   darkMode
                     ? 'border-[#25d366]/40 text-[#25d366] hover:bg-[#25d366]/10'
@@ -334,16 +440,197 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                 }`}
               >
                 <Camera className="w-3.5 h-3.5" />
-                <span>Editar</span>
+                <span>{isUploadingAvatar ? 'Enviando...' : 'Editar Foto'}</span>
               </button>
             </div>
           </div>
 
-          {/* Seção: Informações da empresa */}
+          {/* ========================================================= */}
+          {/* SEÇÃO 1: PERFIL DO USUÁRIO (Tabela: public.profiles) */}
+          {/* ========================================================= */}
+          <div className="space-y-4 mb-8">
+            <div className="flex items-center justify-between pb-2 border-b border-[#00a884]/25">
+              <div className="flex items-center gap-2">
+                <User className="w-5 h-5 text-[#00a884]" />
+                <h2 className="text-lg sm:text-xl font-bold tracking-tight text-left">
+                  Meu Perfil (Dados Pessoais)
+                </h2>
+              </div>
+              <span className="text-[11px] font-medium px-2.5 py-0.5 rounded-full bg-[#00a884]/15 text-[#00a884]">
+                public.profiles
+              </span>
+            </div>
+
+            {/* Campo: Nome Pessoal */}
+            <div className="flex items-start gap-4">
+              <div className="pt-3 text-[#8696a0]">
+                <User className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <div
+                  className={`relative border rounded-xl px-3.5 pt-3 pb-2 transition-colors ${
+                    darkMode
+                      ? 'border-[#2a3942] focus-within:border-[#00a884] bg-[#111b21]'
+                      : 'border-[#d1d7db] focus-within:border-[#00a884] bg-white'
+                  }`}
+                >
+                  <label
+                    className={`absolute -top-2.5 left-3 px-1 text-[11px] font-medium ${
+                      darkMode ? 'bg-[#111b21] text-[#8696a0]' : 'bg-white text-[#54656f]'
+                    }`}
+                  >
+                    Nome pessoal
+                  </label>
+                  <input
+                    type="text"
+                    value={userName}
+                    onChange={(e) => setUserName(e.target.value)}
+                    className="w-full bg-transparent outline-none text-sm font-medium leading-tight"
+                    placeholder="Seu nome completo"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Campo: Cargo / Função (role_title) */}
+            <div className="flex items-start gap-4">
+              <div className="pt-3 text-[#8696a0]">
+                <Briefcase className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <div
+                  className={`relative border rounded-xl px-3.5 pt-3 pb-2 transition-colors ${
+                    darkMode
+                      ? 'border-[#2a3942] focus-within:border-[#00a884] bg-[#111b21]'
+                      : 'border-[#d1d7db] focus-within:border-[#00a884] bg-white'
+                  }`}
+                >
+                  <label
+                    className={`absolute -top-2.5 left-3 px-1 text-[11px] font-medium ${
+                      darkMode ? 'bg-[#111b21] text-[#8696a0]' : 'bg-white text-[#54656f]'
+                    }`}
+                  >
+                    Cargo / Função
+                  </label>
+                  <input
+                    type="text"
+                    value={roleTitle}
+                    onChange={(e) => setRoleTitle(e.target.value)}
+                    className="w-full bg-transparent outline-none text-sm font-medium leading-tight"
+                    placeholder="Ex: Gerente Comercial, Atendente Sênior, Supervisor"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Campo: Telefone Pessoal */}
+            <div className="flex items-start gap-4">
+              <div className="pt-3 text-[#8696a0]">
+                <Phone className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <div
+                  className={`relative border rounded-xl px-3.5 pt-3 pb-2 transition-colors ${
+                    darkMode
+                      ? 'border-[#2a3942] focus-within:border-[#00a884] bg-[#111b21]'
+                      : 'border-[#d1d7db] focus-within:border-[#00a884] bg-white'
+                  }`}
+                >
+                  <label
+                    className={`absolute -top-2.5 left-3 px-1 text-[11px] font-medium ${
+                      darkMode ? 'bg-[#111b21] text-[#8696a0]' : 'bg-white text-[#54656f]'
+                    }`}
+                  >
+                    Telefone pessoal / Celular
+                  </label>
+                  <input
+                    type="tel"
+                    value={userPhone}
+                    onChange={(e) => setUserPhone(e.target.value)}
+                    className="w-full bg-transparent outline-none text-sm font-medium leading-tight"
+                    placeholder="+55 11 99999-9999"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Campo: Bio / Apresentação pessoal */}
+            <div className="flex items-start gap-4">
+              <div className="pt-3 text-[#8696a0]">
+                <FileText className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <div
+                  className={`relative border rounded-xl px-3.5 pt-3 pb-2 transition-colors ${
+                    darkMode
+                      ? 'border-[#2a3942] focus-within:border-[#00a884] bg-[#111b21]'
+                      : 'border-[#d1d7db] focus-within:border-[#00a884] bg-white'
+                  }`}
+                >
+                  <label
+                    className={`absolute -top-2.5 left-3 px-1 text-[11px] font-medium ${
+                      darkMode ? 'bg-[#111b21] text-[#8696a0]' : 'bg-white text-[#54656f]'
+                    }`}
+                  >
+                    Bio / Apresentação pessoal
+                  </label>
+                  <textarea
+                    rows={2}
+                    value={userBio}
+                    onChange={(e) => setUserBio(e.target.value)}
+                    className="w-full bg-transparent outline-none text-sm font-normal leading-relaxed resize-none"
+                    placeholder="Conte um pouco sobre você e sua função"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Campo: E-mail de Login (Read-only do Supabase Auth) */}
+            <div className="flex items-start gap-4">
+              <div className="pt-3 text-[#8696a0]">
+                <Mail className="w-5 h-5" />
+              </div>
+              <div className="flex-1">
+                <div
+                  className={`relative border rounded-xl px-3.5 pt-3 pb-2 transition-colors opacity-90 ${
+                    darkMode ? 'border-[#2a3942] bg-[#182229]' : 'border-[#d1d7db] bg-[#f0f2f5]'
+                  }`}
+                >
+                  <label
+                    className={`absolute -top-2.5 left-3 px-1 text-[11px] font-medium flex items-center gap-1.5 ${
+                      darkMode ? 'bg-[#182229] text-[#8696a0]' : 'bg-[#f0f2f5] text-[#54656f]'
+                    }`}
+                  >
+                    <span>E-mail de Login</span>
+                    <span className="text-[10px] text-[#00a884] font-medium inline-flex items-center gap-0.5">
+                      <ShieldCheck className="w-3 h-3" /> Supabase Auth
+                    </span>
+                  </label>
+                  <input
+                    type="email"
+                    value={authEmail}
+                    disabled
+                    className="w-full bg-transparent outline-none text-sm font-medium text-[#8696a0] cursor-not-allowed"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className={`my-8 border-t ${darkMode ? 'border-[#222e35]' : 'border-[#e9edef]'}`} />
+
+          {/* ========================================================= */}
+          {/* SEÇÃO 2: INFORMAÇÕES DA EMPRESA (Tabela: public.accounts) */}
+          {/* ========================================================= */}
           <div className="space-y-5">
-            <h2 className="text-lg sm:text-xl font-bold font-serif tracking-wide text-left mb-4">
-              Informações da empresa
-            </h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg sm:text-xl font-bold font-serif tracking-wide text-left">
+                Informações da empresa
+              </h2>
+              <span className="text-[11px] font-medium px-2 py-0.5 rounded bg-[#8696a0]/15 text-[#8696a0]">
+                Conta Ativa: {currentAccount?.name || 'Empresa'}
+              </span>
+            </div>
 
             {/* Campo: Nome comercial */}
             <div className="flex items-start gap-4">
@@ -722,10 +1009,10 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                   </label>
                   <input
                     type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    value={companyEmail}
+                    onChange={(e) => setCompanyEmail(e.target.value)}
                     className="w-full bg-transparent outline-none text-sm font-medium"
-                    placeholder="Email da conta"
+                    placeholder="Email da empresa"
                   />
                 </div>
               </div>
@@ -756,8 +1043,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
                   </label>
                   <input
                     type="tel"
-                    value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
+                    value={companyPhone}
+                    onChange={(e) => setCompanyPhone(e.target.value)}
                     className="w-full bg-transparent outline-none text-sm font-semibold"
                     placeholder="+55 55 9680-4923"
                   />
@@ -798,19 +1085,28 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             </p>
 
             <div className="space-y-3">
-              {/* Opção 1: Carregar do Computador */}
+              {/* Opção 1: Carregar do Computador (Supabase Storage: bucket avatar) */}
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className={`w-full p-3 rounded-xl border flex items-center gap-3 transition-colors cursor-pointer ${
+                disabled={isUploadingAvatar}
+                className={`w-full p-3 rounded-xl border flex items-center gap-3 transition-colors cursor-pointer disabled:opacity-50 ${
                   darkMode ? 'bg-[#111b21] border-[#2a3942] hover:bg-[#182229]' : 'bg-[#f0f2f5] border-[#d1d7db] hover:bg-[#e9edef]'
                 }`}
               >
                 <div className="w-10 h-10 rounded-full bg-[#00a884]/20 flex items-center justify-center text-[#00a884] shrink-0">
-                  <Upload className="w-5 h-5" />
+                  {isUploadingAvatar ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : (
+                    <Upload className="w-5 h-5" />
+                  )}
                 </div>
                 <div className="text-left">
-                  <span className="font-semibold text-sm block">Carregar foto do computador</span>
-                  <span className="text-[11px] text-[#8696a0]">JPG, PNG, GIF ou WEBP (até 5MB)</span>
+                  <span className="font-semibold text-sm block">
+                    {isUploadingAvatar ? 'Enviando para o Supabase Storage...' : 'Carregar foto do computador'}
+                  </span>
+                  <span className="text-[11px] text-[#8696a0]">
+                    JPG, PNG ou WEBP (até 5MB) • Bucket: avatar
+                  </span>
                 </div>
               </button>
 

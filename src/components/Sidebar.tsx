@@ -995,10 +995,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         {/* Pin, Mute, Unread Badges e Setinha de Opções do WhatsApp Web */}
                         <div className="flex items-center gap-1.5 shrink-0">
                           {conv.isMuted && (
-                            <BellOff className="w-3.5 h-3.5 text-[#8696a0]" title="Notificações silenciadas" />
+                            <span title="Notificações silenciadas">
+                              <BellOff className="w-3.5 h-3.5 text-[#8696a0]" />
+                            </span>
                           )}
                           {conv.isPinned && (
-                            <Pin className="w-3.5 h-3.5 rotate-45 text-[#8696a0]" title="Conversa fixada" />
+                            <span title="Conversa fixada">
+                              <Pin className="w-3.5 h-3.5 rotate-45 text-[#8696a0]" />
+                            </span>
                           )}
                           {conv.unreadCount > 0 && (
                             <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-[#25d366] text-black text-[10px] font-bold flex items-center justify-center leading-none shadow-sm">

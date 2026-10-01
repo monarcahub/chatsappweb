@@ -33,6 +33,8 @@ export interface AuthUser {
   category?: string;
   website?: string;
   phone?: string;
+  role_title?: string;
+  bio?: string;
   username?: string;
   bannerUrl?: string;
   mood?: string;
