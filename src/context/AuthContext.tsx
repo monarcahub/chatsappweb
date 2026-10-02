@@ -427,7 +427,145 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       // Se autenticado no Supabase Auth mas SEM NENHUM vínculo em account_users:
-      // NÃO atribui nenhuma empresa automaticamente (evita vazamento de tenant entre usuários)
+      // Tenta auto-provisionar a empresa para o usuário (ex: recém-cadastrado pós-confirmação de e-mail)
+      let pendingReg: any = null;
+      try {
+        const rawPending = localStorage.getItem(`pending_reg_${cleanEmail}`);
+        if (rawPending) pendingReg = JSON.parse(rawPending);
+      } catch {}
+
+      const metaCompanyName =
+        pendingReg?.companyName ||
+        authData.user?.user_metadata?.company_name ||
+        authData.user?.user_metadata?.companyName;
+      const metaSegment =
+        pendingReg?.segment ||
+        authData.user?.user_metadata?.company_segment ||
+        authData.user?.user_metadata?.companySegment ||
+        'Serviços & Atendimento';
+      const metaAdminName =
+        pendingReg?.adminName ||
+        profileData?.name ||
+        authData.user?.user_metadata?.name ||
+        cleanEmail.split('@')[0] ||
+        'Administrador';
+
+      const companyNameToCreate = metaCompanyName?.trim() || `Empresa de ${metaAdminName}`;
+
+      let autoProvisionedAcc: Account | null = null;
+
+      // 1. Tentar provisionar via RPC create_new_account
+      try {
+        const { data: rpcRes, error: rpcErr } = await supabase.rpc('create_new_account', {
+          p_company_name: companyNameToCreate,
+          p_company_segment: metaSegment,
+          p_admin_name: metaAdminName,
+        });
+
+        if (!rpcErr && rpcRes?.account) {
+          autoProvisionedAcc = {
+            id: rpcRes.account.id,
+            name: rpcRes.account.name || companyNameToCreate,
+            slug: rpcRes.account.slug || 'empresa',
+            segment: rpcRes.account.segment || metaSegment,
+            whatsappPhone: rpcRes.account.whatsapp_phone || '',
+            plan: rpcRes.account.plan || 'Plano Pro Omnichannel',
+            createdAt: rpcRes.account.createdAt || new Date().toISOString(),
+          };
+        }
+      } catch (rpcEx) {
+        console.warn('RPC create_new_account falhou, tentando inserção direta:', rpcEx);
+      }
+
+      // 2. Fallback de inserção direta caso a RPC não tenha sido criada no banco
+      if (!autoProvisionedAcc) {
+        try {
+          const baseSlug = companyNameToCreate
+            .toLowerCase()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '')
+            .replace(/[^a-z0-9]/g, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-|-$/g, '') || 'empresa';
+          const slug = `${baseSlug}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+          const { data: createdAcc } = await supabase
+            .from('accounts')
+            .insert({
+              name: companyNameToCreate,
+              slug,
+              segment: metaSegment,
+              plan: 'pro',
+            })
+            .select('*')
+            .single();
+
+          if (createdAcc) {
+            await supabase.from('account_users').insert([
+              {
+                account_id: createdAcc.id,
+                user_id: authUserId,
+                name: metaAdminName,
+                email: cleanEmail,
+                role: 'admin',
+                is_ai_agent: false,
+              },
+              {
+                account_id: createdAcc.id,
+                name: `Agente IA - ${companyNameToCreate}`,
+                email: `ia.${slug}@monarcahub.com`,
+                role: 'ai_agent',
+                is_ai_agent: true,
+              },
+            ]);
+
+            await supabase.from('cerebro_ia').upsert(
+              {
+                account_id: createdAcc.id,
+                user_id: authUserId,
+                business_name: companyNameToCreate,
+                tone_of_voice: 'Amigável, acolhedor e consultivo',
+                is_active: true,
+              },
+              { onConflict: 'account_id' }
+            );
+
+            autoProvisionedAcc = mapDbAccountToAccount(createdAcc);
+          }
+        } catch (directEx) {
+          console.warn('Erro no fallback de criação da empresa:', directEx);
+        }
+      }
+
+      if (autoProvisionedAcc) {
+        const authUser: AuthUser = {
+          id: authUserId,
+          name: metaAdminName,
+          email: authData.user?.email || cleanEmail,
+          role: 'admin',
+          accountId: autoProvisionedAcc.id,
+          accountName: autoProvisionedAcc.name,
+          phone: profileData?.phone,
+          role_title: profileData?.role_title || 'Gestor / Administrador',
+          bio: profileData?.bio,
+          mood: profileData?.mood || 'Disponível',
+          avatarUrl: profileData?.avatar_url,
+        };
+
+        setAvailableAccounts([autoProvisionedAcc]);
+        setCurrentAccount(autoProvisionedAcc);
+        setUser(authUser);
+
+        try {
+          localStorage.setItem(STORAGE_KEY_ACCOUNT, JSON.stringify(autoProvisionedAcc));
+          localStorage.setItem(STORAGE_KEY_ALL_ACCOUNTS, JSON.stringify([autoProvisionedAcc]));
+          localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(authUser));
+          localStorage.removeItem(`pending_reg_${cleanEmail}`);
+        } catch {}
+
+        return { success: true };
+      }
+
       const unlinkedUser: AuthUser = {
         id: authUserId,
         name: profileData?.name || authData.user?.user_metadata?.name || cleanEmail.split('@')[0],
@@ -606,13 +744,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
-      // 1. Criar usuário no Supabase Auth com senha
+      // 1. Criar usuário no Supabase Auth com senha e metadados completos
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email: cleanEmail,
         password: password,
         options: {
           data: {
             name: cleanAdminName,
+            company_name: cleanCompanyName,
+            company_segment: cleanSegment,
           },
         },
       });
@@ -638,56 +778,149 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
+      // Salva dados no localStorage para auto-provisionamento caso o usuário confirme o e-mail posteriormente
+      try {
+        localStorage.setItem(
+          `pending_reg_${cleanEmail}`,
+          JSON.stringify({
+            companyName: cleanCompanyName,
+            segment: cleanSegment,
+            adminName: cleanAdminName,
+          })
+        );
+      } catch {}
+
+      let registeredAcc: Account | null = null;
+      let registeredUser: AuthUser | null = null;
+
+      // Se a sessão estiver ativa (ex: "Confirm email" desligado no Supabase):
+      if (signUpData.session) {
+        // 2. Chamar a RPC transacional create_new_account com privilégios seguros
+        try {
+          const { data: rpcResult, error: rpcError } = await supabase.rpc('create_new_account', {
+            p_company_name: cleanCompanyName,
+            p_company_segment: cleanSegment,
+            p_admin_name: cleanAdminName,
+          });
+
+          if (!rpcError && rpcResult?.account) {
+            const rawAccount = rpcResult.account || {};
+            const rawUser = rpcResult.user || {};
+
+            registeredAcc = {
+              id: rawAccount.id || authUser.id,
+              name: rawAccount.name || cleanCompanyName,
+              slug: rawAccount.slug || 'empresa',
+              segment: rawAccount.segment || cleanSegment,
+              whatsappPhone: rawAccount.whatsapp_phone || rawAccount.whatsappPhone || '',
+              plan: rawAccount.plan || 'Plano Pro Omnichannel',
+              createdAt: rawAccount.createdAt || new Date().toISOString(),
+            };
+
+            registeredUser = {
+              id: rawUser.id || authUser.id,
+              name: rawUser.name || cleanAdminName,
+              email: rawUser.email || cleanEmail,
+              role: rawUser.role || 'admin',
+              accountId: registeredAcc.id,
+              accountName: registeredAcc.name,
+            };
+          }
+        } catch (rpcEx) {
+          console.warn('RPC create_new_account falhou, tentando fallback direto:', rpcEx);
+        }
+
+        // 3. Fallback de inserção direta caso a RPC não tenha sido criada no banco ainda
+        if (!registeredAcc) {
+          try {
+            const baseSlug = cleanCompanyName
+              .toLowerCase()
+              .normalize('NFD')
+              .replace(/[\u0300-\u036f]/g, '')
+              .replace(/[^a-z0-9]/g, '-')
+              .replace(/-+/g, '-')
+              .replace(/^-|-$/g, '') || 'empresa';
+            const slug = `${baseSlug}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+            const { data: createdAcc } = await supabase
+              .from('accounts')
+              .insert({
+                name: cleanCompanyName,
+                slug,
+                segment: cleanSegment,
+                plan: 'pro',
+              })
+              .select('*')
+              .single();
+
+            if (createdAcc) {
+              await supabase.from('account_users').insert([
+                {
+                  account_id: createdAcc.id,
+                  user_id: authUser.id,
+                  name: cleanAdminName,
+                  email: cleanEmail,
+                  role: 'admin',
+                  is_ai_agent: false,
+                },
+                {
+                  account_id: createdAcc.id,
+                  name: `Agente IA - ${cleanCompanyName}`,
+                  email: `ia.${slug}@monarcahub.com`,
+                  role: 'ai_agent',
+                  is_ai_agent: true,
+                },
+              ]);
+
+              await supabase.from('cerebro_ia').upsert(
+                {
+                  account_id: createdAcc.id,
+                  user_id: authUser.id,
+                  business_name: cleanCompanyName,
+                  tone_of_voice: 'Amigável, acolhedor e consultivo',
+                  is_active: true,
+                },
+                { onConflict: 'account_id' }
+              );
+
+              registeredAcc = mapDbAccountToAccount(createdAcc);
+              registeredUser = {
+                id: authUser.id,
+                name: cleanAdminName,
+                email: cleanEmail,
+                role: 'admin',
+                accountId: createdAcc.id,
+                accountName: createdAcc.name,
+              };
+            }
+          } catch (directEx) {
+            console.warn('Erro ao provisionar empresa diretamente:', directEx);
+          }
+        }
+
+        if (registeredAcc && registeredUser) {
+          setAvailableAccounts([registeredAcc]);
+          setCurrentAccount(registeredAcc);
+          setUser(registeredUser);
+
+          try {
+            localStorage.setItem(STORAGE_KEY_ACCOUNT, JSON.stringify(registeredAcc));
+            localStorage.setItem(STORAGE_KEY_ALL_ACCOUNTS, JSON.stringify([registeredAcc]));
+            localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(registeredUser));
+            localStorage.removeItem(`pending_reg_${cleanEmail}`);
+          } catch {}
+
+          return { success: true, account: registeredAcc };
+        }
+      }
+
       // Se a confirmação de e-mail estiver ativa no projeto Supabase, a sessão vem nula
       if (!signUpData.session) {
         return {
           success: false,
-          error: 'Cadastro criado! A confirmação de e-mail está ativada. Por favor, verifique sua caixa de entrada e clique no link de ativação antes de acessar.',
+          error: 'Cadastro criado! A confirmação de e-mail está ativada no seu Supabase. Desative "Confirm email" em Authentication -> Providers -> Email para acesso imediato sem necessidade de confirmação.',
         };
       }
-
-      // 2. Chamar a RPC transacional create_new_account com privilégios seguros
-      const { data: rpcResult, error: rpcError } = await supabase.rpc('create_new_account', {
-        p_company_name: cleanCompanyName,
-        p_company_segment: cleanSegment,
-        p_admin_name: cleanAdminName,
-      });
-
-      if (rpcError) {
-        console.error('[Supabase] Erro na RPC create_new_account:', rpcError);
-        return {
-          success: false,
-          error: rpcError.message || 'Erro ao inicializar empresa e vincular gestor.',
-        };
-      }
-
-      // 3. Formatar os dados da nova empresa e do gestor retornados pela RPC
-      const rawAccount = rpcResult?.account || {};
-      const rawUser = rpcResult?.user || {};
-
-      const registeredAcc: Account = {
-        id: rawAccount.id || authUser.id,
-        name: rawAccount.name || cleanCompanyName,
-        slug: rawAccount.slug || 'empresa',
-        segment: rawAccount.segment || cleanSegment,
-        whatsappPhone: rawAccount.whatsapp_phone || rawAccount.whatsappPhone || '',
-        plan: rawAccount.plan || 'Plano Pro Omnichannel',
-        createdAt: rawAccount.createdAt || new Date().toISOString(),
-      };
-
-      const registeredUser: AuthUser = {
-        id: rawUser.id || authUser.id,
-        name: rawUser.name || cleanAdminName,
-        email: rawUser.email || cleanEmail,
-        role: rawUser.role || 'admin',
-        accountId: registeredAcc.id,
-        accountName: registeredAcc.name,
-      };
-
-      // 4. Hidratação imediata do estado da aplicação (isolamento multi-tenant restrito ao novo tenant)
-      setAvailableAccounts([registeredAcc]);
-      setCurrentAccount(registeredAcc);
-      setUser(registeredUser);
 
       try {
         localStorage.setItem(STORAGE_KEY_ACCOUNT, JSON.stringify(registeredAcc));

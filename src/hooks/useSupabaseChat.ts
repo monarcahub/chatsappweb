@@ -203,43 +203,35 @@ export function useSupabaseChat(
       if (!convId) return;
 
       try {
-        let rows: any[] | null = null;
-
-        // 1. Tenta buscar via endpoint seguro no servidor (service_role, bypass RLS e alta disponibilidade)
-        try {
-          const res = await fetch(`/api/messages?conversation_id=${encodeURIComponent(convId)}`);
-          if (res.ok) {
-            const json = await res.json();
-            if (Array.isArray(json.messages)) {
-              rows = json.messages;
-            }
-          }
-        } catch {
-          // Prossegue para o cliente direto caso a chamada HTTP falhe
-        }
-
-        // 2. Fallback direto no Supabase se não obtido via API
         await ensureSupabaseConfig();
-        if (!rows && isSupabaseConfigured) {
-          const { data, error } = await supabase
-            .from('messages')
-            .select('*')
-            .eq('conversation_id', convId)
-            .order('created_at', { ascending: true });
+        if (!isSupabaseConfigured) return;
 
-          if (!error && data) {
-            rows = data;
-          } else if (error) {
-            console.warn(`[Supabase] Erro ao carregar mensagens da conversa ${convId}:`, error.message);
-          }
-        }
+        const { data, error } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('conversation_id', convId)
+          .order('created_at', { ascending: true });
 
-        if (rows) {
-          const formatted = rows.map(formatDatabaseMessage);
-          setMessages((prev) => ({
-            ...prev,
-            [convId]: formatted,
-          }));
+        if (!error && data) {
+          const formatted = data.map(formatDatabaseMessage);
+          setMessages((prev) => {
+            const currentList = prev[convId] || [];
+            // Se já tem a mesma quantidade e o último ID for idêntico, evita render desnecessário
+            const lastCurrent = currentList[currentList.length - 1] as Message | undefined;
+            const lastFormatted = formatted[formatted.length - 1] as Message | undefined;
+            if (
+              currentList.length === formatted.length &&
+              lastCurrent?.id === lastFormatted?.id
+            ) {
+              return prev;
+            }
+            return {
+              ...prev,
+              [convId]: formatted,
+            };
+          });
+        } else if (error) {
+          console.warn(`[Supabase] Erro ao carregar mensagens da conversa ${convId}:`, error.message);
         }
       } catch (err) {
         console.error('[Supabase] Falha na consulta da tabela messages:', err);
@@ -460,15 +452,39 @@ export function useSupabaseChat(
     }
   }, [currentAccountId, loadMessagesForConversation]);
 
-  // Inicializar e configurar Supabase Realtime para mensagens e conversas
+  // Inicializar e configurar Supabase Realtime para mensagens e conversas + Polling Ativo
   useEffect(() => {
     loadSupabaseData();
 
-    if (!isSupabaseConfigured) return;
+    if (!isSupabaseConfigured || !currentAccountId) return;
+
+    // 1. Polling de sincronização automática a cada 3.5 segundos:
+    // Garante que mesmo em caso de perda temporária de WebSocket ou ausência de replicação,
+    // novas mensagens e conversas chegam automaticamente sem precisar dar F5 / refresh na tela.
+    const pollInterval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        loadSupabaseData();
+        if (selectedIdRef.current) {
+          loadMessagesForConversation(selectedIdRef.current);
+        }
+      }
+    }, 3500);
 
     const startTime = performance.now();
     const channel = supabase
       .channel(`omnichat-realtime-${currentAccountId}-${Date.now()}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'conversations',
+        },
+        () => {
+          // Nova conversa iniciada (ex: novo contato chamou): recarrega lista imediatamente
+          loadSupabaseData();
+        }
+      )
       .on(
         'postgres_changes',
         {
@@ -483,6 +499,13 @@ export function useSupabaseChat(
           const convId = newMsg.conversation_id;
           if (!convId) return;
 
+          // Se a conversa ainda não constar na lista lateral (novo contato), força recarga das conversas
+          const belongsToActiveConvs = conversationsRef.current.some((c) => c.id === convId);
+          if (!belongsToActiveConvs) {
+            loadSupabaseData();
+            return;
+          }
+
           // Isolamento rigoroso de tenant no listener Realtime:
           if (!currentAccountId || currentAccountId === '') {
             return;
@@ -493,18 +516,9 @@ export function useSupabaseChat(
             if (newMsg.account_id && newMsg.account_id !== currentAccountId) {
               return;
             }
-            // Se não trouxer account_id explícito na mensagem, verifica se a conversa pertence às conversas carregadas da conta ativa
-            const belongsToActiveConvs = conversationsRef.current.some((c) => c.id === convId);
-            if (!belongsToActiveConvs && !newMsg.account_id) {
-              return;
-            }
           } else {
             // Se visão consolidada, aceita somente se pertencer às contas vinculadas do usuário
             if (newMsg.account_id && !allowedAccountIds.includes(newMsg.account_id)) {
-              return;
-            }
-            const belongsToAllowedConvs = conversationsRef.current.some((c) => c.id === convId);
-            if (!belongsToAllowedConvs && !newMsg.account_id) {
               return;
             }
           }
@@ -617,8 +631,16 @@ export function useSupabaseChat(
         { event: 'UPDATE', schema: 'public', table: 'conversations' },
         (payload) => {
           const updated = payload.new as any;
-          setConversations((prev) =>
-            prev.map((c) => {
+          if (!updated?.id) return;
+
+          setConversations((prev) => {
+            const exists = prev.some((c) => c.id === updated.id);
+            if (!exists) {
+              loadSupabaseData();
+              return prev;
+            }
+
+            return prev.map((c) => {
               if (c.id === updated.id) {
                 const newText = updated.last_message_text !== undefined ? updated.last_message_text : c.lastMessage.text;
                 const textLower = String(newText || '').toLowerCase().trim();
@@ -658,8 +680,8 @@ export function useSupabaseChat(
                 };
               }
               return c;
-            })
-          );
+            });
+          });
         }
       )
       .subscribe((status) => {
@@ -669,9 +691,10 @@ export function useSupabaseChat(
       });
 
     return () => {
+      clearInterval(pollInterval);
       supabase.removeChannel(channel);
     };
-  }, [loadSupabaseData, currentAccountId, formatDatabaseMessage]);
+  }, [loadSupabaseData, currentAccountId, formatDatabaseMessage, loadMessagesForConversation]);
 
   // Selecionar conversa, zerar mensagens não lidas e carregar histórico da tabela 'messages'
   const selectConversation = useCallback(
@@ -841,24 +864,16 @@ export function useSupabaseChat(
 
         let webhookData: any = null;
         try {
-          const res = await fetch('/api/messages/send-outgoing', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-          if (res.ok) {
-            webhookData = await res.json();
-          }
-        } catch {
-          // Fallback direto
           const direct = await fetch(OUTGOING_WEBHOOK_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
           });
           if (direct.ok) {
-            webhookData = await direct.json();
+            webhookData = await direct.json().catch(() => ({}));
           }
+        } catch (whErr) {
+          console.warn('[Webhook] Aviso ao enviar webhook de saída:', whErr);
         }
 
         if (webhookData) {
