@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   ArrowLeft,
   Search,
@@ -94,7 +94,18 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const [inputText, setInputText] = useState('');
   const [textSelection, setTextSelection] = useState<{ start: number; end: number } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Rolagem suave e controlada estritamente dentro da caixa de mensagens (sem mover a janela do navegador)
+  const scrollToBottom = useCallback((smooth = false) => {
+    if (messagesContainerRef.current) {
+      messagesContainerRef.current.scrollTo({
+        top: messagesContainerRef.current.scrollHeight,
+        behavior: smooth ? 'smooth' : 'auto',
+      });
+    }
+  }, []);
 
   // Monitora seleção de texto no textarea para exibir toolbar de formatação do WhatsApp
   const updateSelectionState = () => {
@@ -192,9 +203,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   useEffect(() => {
     if (!isSearchOpen && !isSelectionMode) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      // Rola apenas a div interna de mensagens, sem disparar scroll da janela do navegador no mobile
+      scrollToBottom(true);
     }
-  }, [messages, isSearchOpen, isSelectionMode]);
+  }, [messages, isSearchOpen, isSelectionMode, scrollToBottom]);
 
   // Reset states when conversation changes
   useEffect(() => {
@@ -203,7 +215,19 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     setSearchQuery('');
     setIsSelectionMode(false);
     setSelectedMessageIds([]);
-  }, [conversation?.id]);
+
+    // Trava e reseta a janela do navegador no topo absoluto ao abrir conversa
+    if (typeof window !== 'undefined') {
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    }
+
+    // Posiciona instantaneamente no final das mensagens da nova conversa
+    setTimeout(() => {
+      scrollToBottom(false);
+    }, 10);
+  }, [conversation?.id, scrollToBottom]);
 
   const handleSend = () => {
     if (!inputText.trim()) return;
@@ -530,7 +554,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
       {/* Chat Top Header */}
       <div
-        className={`px-3 sm:px-4 py-2 flex items-center justify-between border-b z-20 shrink-0 select-none ${
+        className={`px-3 sm:px-4 pt-[max(env(safe-area-inset-top),0.625rem)] pb-2 sm:py-2.5 flex items-center justify-between border-b z-30 shrink-0 select-none min-h-[58px] sm:min-h-[60px] sticky top-0 ${
           darkMode ? 'bg-[#202c33] border-[#222e35] text-[#e9edef]' : 'bg-[#f0f2f5] border-[#e9edef] text-[#111b21]'
         }`}
       >
@@ -932,7 +956,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       )}
 
       {/* Chat Messages List (Histórico ao centro) */}
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2 z-10 custom-scrollbar">
+      <div
+        ref={messagesContainerRef}
+        className="flex-1 overflow-y-auto px-4 py-3 space-y-2 z-10 custom-scrollbar overscroll-contain"
+      >
         {/* Banner de Criptografia e Informação Omnichannel */}
         <div className="flex justify-center my-2">
           <div

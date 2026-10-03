@@ -246,6 +246,180 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
     };
   }, []);
 
+  const [exitToastVisible, setExitToastVisible] = useState(false);
+  const lastBackPressTimeRef = useRef<number>(0);
+  const isNavigatingBackRef = useRef(false);
+
+  const selectedIdRef = useRef(selectedId);
+  selectedIdRef.current = selectedId;
+
+  const isRightPanelOpenRef = useRef(isRightPanelOpen);
+  isRightPanelOpenRef.current = isRightPanelOpen;
+
+  const isProfileOpenRef = useRef(isProfileOpen);
+  isProfileOpenRef.current = isProfileOpen;
+
+  const isNewChatModalOpenRef = useRef(isNewChatModalOpen);
+  isNewChatModalOpenRef.current = isNewChatModalOpen;
+
+  const isAIBrainOpenRef = useRef(isAIBrainOpen);
+  isAIBrainOpenRef.current = isAIBrainOpen;
+
+  const isArchitectureModalOpenRef = useRef(isArchitectureModalOpen);
+  isArchitectureModalOpenRef.current = isArchitectureModalOpen;
+
+  const isCallsNoticeOpenRef = useRef(isCallsNoticeOpen);
+  isCallsNoticeOpenRef.current = isCallsNoticeOpen;
+
+  const activeRailTabRef = useRef(activeRailTab);
+  activeRailTabRef.current = activeRailTab;
+
+  // Intercepta e gerencia o botão Voltar do sistema (Android e gestos de toque no celular)
+  useEffect(() => {
+    // Garante que a entrada base exista no histórico do navegador
+    if (typeof window !== 'undefined' && (!window.history.state || window.history.state.chatsApp !== 'root')) {
+      window.history.replaceState({ chatsApp: 'root' }, '');
+    }
+
+    const handlePopState = () => {
+      isNavigatingBackRef.current = true;
+
+      // 1. Se algum modal estiver aberto, fecha o modal primeiro
+      if (isProfileOpenRef.current) {
+        setIsProfileOpen(false);
+        setTimeout(() => { isNavigatingBackRef.current = false; }, 50);
+        return;
+      }
+      if (isNewChatModalOpenRef.current) {
+        setIsNewChatModalOpen(false);
+        setTimeout(() => { isNavigatingBackRef.current = false; }, 50);
+        return;
+      }
+      if (isAIBrainOpenRef.current) {
+        setIsAIBrainOpen(false);
+        setTimeout(() => { isNavigatingBackRef.current = false; }, 50);
+        return;
+      }
+      if (isArchitectureModalOpenRef.current) {
+        setIsArchitectureModalOpen(false);
+        setTimeout(() => { isNavigatingBackRef.current = false; }, 50);
+        return;
+      }
+      if (isCallsNoticeOpenRef.current) {
+        setIsCallsNoticeOpen(false);
+        setTimeout(() => { isNavigatingBackRef.current = false; }, 50);
+        return;
+      }
+
+      // 2. Se o painel lateral de CRM estiver aberto no mobile, fecha o CRM
+      if (isRightPanelOpenRef.current && isMobile) {
+        setIsRightPanelOpen(false);
+        setTimeout(() => { isNavigatingBackRef.current = false; }, 50);
+        return;
+      }
+
+      // 3. Se uma conversa estiver aberta no mobile, volta para a tela inicial com a lista de conversas!
+      if (selectedIdRef.current) {
+        setSelectedId(null);
+        setTimeout(() => { isNavigatingBackRef.current = false; }, 50);
+        return;
+      }
+
+      // 4. Se estiver em outra aba (Status ou Canais) no mobile, volta para a lista de Conversas
+      if (activeRailTabRef.current !== 'chats' && isMobile) {
+        setActiveRailTab('chats');
+        setTimeout(() => { isNavigatingBackRef.current = false; }, 50);
+        return;
+      }
+
+      // 5. Se já está na tela inicial de conversas no mobile e pressionou voltar do celular:
+      // Evita sair acidentalmente da plataforma com confirmação rápida de 2 segundos
+      if (isMobile) {
+        const now = Date.now();
+        if (now - lastBackPressTimeRef.current < 2000) {
+          // Segundo toque rápido: permite que o navegador saia
+          window.history.back();
+        } else {
+          lastBackPressTimeRef.current = now;
+          // Re-insere o estado base para segurar na plataforma
+          window.history.pushState({ chatsApp: 'root' }, '');
+          setExitToastVisible(true);
+          setTimeout(() => {
+            setExitToastVisible(false);
+          }, 2000);
+        }
+      }
+
+      setTimeout(() => { isNavigatingBackRef.current = false; }, 50);
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [isMobile, setSelectedId]);
+
+  // Sincroniza abertura de conversa no mobile empurrando um estado no histórico
+  const prevSelectedIdRef = useRef<string | null>(selectedId);
+  useEffect(() => {
+    if (isMobile) {
+      if (selectedId && !prevSelectedIdRef.current) {
+        if (!isNavigatingBackRef.current && window.history.state?.chatsApp !== 'chat') {
+          window.history.pushState({ chatsApp: 'chat', id: selectedId }, '');
+        }
+      } else if (selectedId && prevSelectedIdRef.current && selectedId !== prevSelectedIdRef.current) {
+        if (!isNavigatingBackRef.current) {
+          window.history.replaceState({ chatsApp: 'chat', id: selectedId }, '');
+        }
+      }
+    }
+    prevSelectedIdRef.current = selectedId;
+  }, [selectedId, isMobile]);
+
+  // Sincroniza abertura do CRM no mobile empurrando estado no histórico
+  const prevRightPanelRef = useRef<boolean>(isRightPanelOpen);
+  useEffect(() => {
+    if (isMobile) {
+      if (isRightPanelOpen && !prevRightPanelRef.current) {
+        if (!isNavigatingBackRef.current && window.history.state?.chatsApp !== 'crm') {
+          window.history.pushState({ chatsApp: 'crm' }, '');
+        }
+      }
+    }
+    prevRightPanelRef.current = isRightPanelOpen;
+  }, [isRightPanelOpen, isMobile]);
+
+  // Sincroniza abertura de abas laterais (Status, Canais, etc.) no mobile
+  const prevRailTabRef = useRef<string>(activeRailTab);
+  useEffect(() => {
+    if (isMobile) {
+      if (activeRailTab !== 'chats' && prevRailTabRef.current === 'chats') {
+        if (!isNavigatingBackRef.current && window.history.state?.chatsApp !== 'tab') {
+          window.history.pushState({ chatsApp: 'tab', tab: activeRailTab }, '');
+        }
+      }
+    }
+    prevRailTabRef.current = activeRailTab;
+  }, [activeRailTab, isMobile]);
+
+  // Sincroniza abertura de modais no mobile
+  useEffect(() => {
+    if (isMobile && (isProfileOpen || isNewChatModalOpen || isAIBrainOpen || isArchitectureModalOpen || isCallsNoticeOpen)) {
+      if (!isNavigatingBackRef.current && window.history.state?.chatsApp !== 'modal') {
+        window.history.pushState({ chatsApp: 'modal' }, '');
+      }
+    }
+  }, [isMobile, isProfileOpen, isNewChatModalOpen, isAIBrainOpen, isArchitectureModalOpen, isCallsNoticeOpen]);
+
+  // Ação ao clicar no botão Voltar (<) dentro do cabeçalho da conversa
+  const handleBackToConversations = () => {
+    if (isMobile && window.history.state?.chatsApp === 'chat') {
+      window.history.back();
+    } else {
+      setSelectedId(null);
+    }
+  };
+
   const handleSelectConversation = (id: string) => {
     setSelectedId(id);
     if (inAppNotification?.conversationId === id) {
@@ -259,7 +433,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
 
   return (
     <div
-      className={`h-screen w-screen overflow-hidden flex flex-col ${
+      className={`h-screen h-[100dvh] max-h-[100dvh] w-screen overflow-hidden flex flex-col ${
         darkMode ? 'bg-[#0c1317] text-[#e9edef]' : 'bg-[#d1d7db] text-[#111b21]'
       }`}
     >
@@ -399,7 +573,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               }}
               onToggleRightPanel={handleToggleCRM}
               isRightPanelOpen={isRightPanelOpen}
-              onBackToConversations={() => setSelectedId(null)}
+              onBackToConversations={handleBackToConversations}
               darkMode={darkMode}
               onUpdateStatus={updateConversationStatus}
               isMobileMode={isMobile}
@@ -570,6 +744,13 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               <X className="w-4 h-4" />
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Toast de Confirmação para Sair no Mobile */}
+      {exitToastVisible && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-[#202c33] text-[#e9edef] text-xs font-medium rounded-full shadow-2xl border border-[#313d45] flex items-center gap-2 animate-in fade-in duration-200 pointer-events-none select-none">
+          <span>Pressione voltar novamente para sair do ChatsApp</span>
         </div>
       )}
     </div>

@@ -264,7 +264,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     >
       {/* Sidebar Header (Matches WhatsApp Web screenshot) */}
       <div
-        className={`px-4 py-2.5 flex items-center justify-between border-b ${
+        className={`px-4 pt-[max(env(safe-area-inset-top),0.625rem)] pb-2.5 sm:py-2.5 flex items-center justify-between border-b min-h-[58px] sm:min-h-[60px] sticky top-0 z-20 ${
           darkMode ? 'bg-[#202c33] border-[#222e35]' : 'bg-[#f0f2f5] border-[#e9edef]'
         }`}
       >
