@@ -135,17 +135,44 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Sincroniza em segundo plano estritamente as empresas reais vinculadas ao usuário logado via account_users
   useEffect(() => {
     const syncUserAccountsFromDb = async () => {
-      if (!user?.id) return;
+      if (!user?.id && !user?.email) return;
       try {
         await ensureSupabaseConfig();
         if (!isSupabaseConfigured) return;
 
-        const { data: userRows, error } = await supabase
-          .from('account_users')
-          .select('*, accounts(*)')
-          .eq('user_id', user.id);
+        let userRows: any[] | null = null;
+        if (user.id) {
+          const { data: byUserId } = await supabase
+            .from('account_users')
+            .select('*, accounts(*)')
+            .eq('user_id', user.id);
 
-        if (!error && userRows) {
+          if (byUserId && byUserId.length > 0) {
+            userRows = byUserId;
+          }
+        }
+
+        if ((!userRows || userRows.length === 0) && user.email) {
+          const cleanEmail = user.email.toLowerCase().trim();
+          const { data: byEmail } = await supabase
+            .from('account_users')
+            .select('*, accounts(*)')
+            .eq('email', cleanEmail);
+
+          if (byEmail && byEmail.length > 0) {
+            userRows = byEmail;
+            if (user.id) {
+              supabase
+                .from('account_users')
+                .update({ user_id: user.id })
+                .eq('email', cleanEmail)
+                .is('user_id', null)
+                .then(() => {});
+            }
+          }
+        }
+
+        if (userRows) {
           const userAccounts: Account[] = userRows
             .map((r: any) => r.accounts)
             .filter((a: any) => Boolean(a && a.id))
@@ -170,7 +197,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             setCurrentAccount((prev) => {
               if (prev.id === 'all' && userAccounts.length > 1) return prev;
               const exists = userAccounts.some((a) => a.id === prev.id);
-              return exists ? prev : userAccounts[0];
+              return (exists && prev.id !== '') ? prev : userAccounts[0];
             });
           } else {
             // Nenhuma conta vinculada a este usuário no banco de dados
@@ -343,10 +370,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
-      const { data: userRows, error: userErr } = await supabase
+      let userRows: any[] | null = null;
+      const { data: byUserId } = await supabase
         .from('account_users')
         .select('*, accounts(*)')
         .eq('user_id', authUserId);
+
+      if (byUserId && byUserId.length > 0) {
+        userRows = byUserId;
+      } else {
+        const { data: byEmail } = await supabase
+          .from('account_users')
+          .select('*, accounts(*)')
+          .eq('email', cleanEmail);
+
+        if (byEmail && byEmail.length > 0) {
+          userRows = byEmail;
+          // Vincula o user_id permanente em account_users
+          supabase
+            .from('account_users')
+            .update({ user_id: authUserId })
+            .eq('email', cleanEmail)
+            .is('user_id', null)
+            .then(() => {});
+        }
+      }
 
       const validAccounts: Account[] = (userRows || [])
         .map((r: any) => r.accounts)

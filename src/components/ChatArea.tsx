@@ -1268,14 +1268,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     msg.metadata?.audioUrl ||
                     msg.metadata?.stickerUrl ||
                     msg.metadata?.url ||
-                    (rawContent.startsWith('http') ? rawContent.trim() : '');
+                    (rawContent.startsWith('http') ? rawContent.trim().replace(/[.,;:)\]>]+$/, '') : '');
 
                   // Detecção de link de mídia embutido no texto
                   const mediaLinkMatch = rawContent.match(
                     /https?:\/\/[^\s"'<>]+\.(ogg|opus|mp3|wav|m4a|aac|webm|webp|gif|jpg|jpeg|png|avif|bmp|mp4)(\?[^\s"'<>]*)?/i
                   );
-                  const matchedMediaUrl = mediaLinkMatch ? mediaLinkMatch[0] : null;
-                  const effectiveMediaUrl = mediaUrl || matchedMediaUrl || '';
+                  const matchedMediaUrl = mediaLinkMatch ? mediaLinkMatch[0].replace(/[.,;:)\]>]+$/, '') : null;
+                  const effectiveMediaUrl = (mediaUrl || matchedMediaUrl || '').trim();
 
                   const isAudio =
                     msg.contentType === 'audio' ||

@@ -1,8 +1,12 @@
 import express from 'express';
 import path from 'path';
 import { spawn } from 'child_process';
+import { Readable } from 'stream';
 import { createServer as createViteServer } from 'vite';
 import { createClient } from '@supabase/supabase-js';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const app = express();
 const PORT = 3000;
@@ -10,7 +14,7 @@ const PORT = 3000;
 app.use(express.json());
 
 // Configuração do Supabase com service_role para operações seguras de backend
-const rawUrl = process.env.VITE_SUPABASE_URL || '';
+const rawUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
 const cleanSupabaseUrl = rawUrl.trim().replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '');
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
 
@@ -22,6 +26,19 @@ const supabaseAdmin = cleanSupabaseUrl && serviceRoleKey
 
 // =========================================================================
 // ROTAS DE API DO CHATSAPP
+// =========================================================================
+
+// Fornece configuração do Supabase para o frontend dinamicamente
+app.get('/api/config', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  const supabaseUrl = (process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '').trim().replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '');
+  const supabaseAnonKey = (process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '').trim();
+  res.json({
+    supabaseUrl,
+    supabaseAnonKey,
+    isConfigured: Boolean(supabaseUrl && supabaseAnonKey),
+  });
+});
 // =========================================================================
 
 // Healthcheck
@@ -898,15 +915,27 @@ app.get('/api/audio-proxy', async (req, res) => {
     const rangeHeader = req.headers.range;
     const fetchHeaders: Record<string, string> = {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': '*/*',
     };
     if (rangeHeader) {
       fetchHeaders['Range'] = rangeHeader;
     }
 
-    const audioResponse = await fetch(audioUrl, {
+    let audioResponse = await fetch(audioUrl, {
       method: 'GET',
       headers: fetchHeaders,
+      redirect: 'follow',
     });
+
+    // Se falhou ao buscar com Range (ex: 416 Range Not Satisfiable), tenta sem o cabeçalho Range
+    if (!audioResponse.ok && audioResponse.status !== 206 && rangeHeader) {
+      delete fetchHeaders['Range'];
+      audioResponse = await fetch(audioUrl, {
+        method: 'GET',
+        headers: fetchHeaders,
+        redirect: 'follow',
+      });
+    }
 
     if (!audioResponse.ok && audioResponse.status !== 206) {
       return res.status(audioResponse.status).json({ error: 'Falha ao buscar áudio na origem' });
@@ -914,10 +943,8 @@ app.get('/api/audio-proxy', async (req, res) => {
 
     let contentType = audioResponse.headers.get('content-type') || '';
     if (!contentType || contentType.includes('application/octet-stream') || contentType.includes('text/plain')) {
-      if (audioUrl.toLowerCase().includes('.ogg')) {
-        contentType = 'audio/ogg; codecs=opus';
-      } else if (audioUrl.toLowerCase().includes('.opus')) {
-        contentType = 'audio/opus';
+      if (audioUrl.toLowerCase().includes('.ogg') || audioUrl.toLowerCase().includes('.opus')) {
+        contentType = 'audio/ogg';
       } else if (audioUrl.toLowerCase().includes('.mp3')) {
         contentType = 'audio/mpeg';
       } else if (audioUrl.toLowerCase().includes('.wav')) {
@@ -949,9 +976,14 @@ app.get('/api/audio-proxy', async (req, res) => {
       res.status(audioResponse.status);
     }
 
-    const arrayBuffer = await audioResponse.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    return res.send(buffer);
+    if (audioResponse.body) {
+      const stream = Readable.fromWeb(audioResponse.body as any);
+      stream.pipe(res);
+    } else {
+      const arrayBuffer = await audioResponse.arrayBuffer();
+      res.send(Buffer.from(arrayBuffer));
+    }
+    return;
   } catch (err: any) {
     console.error('[Audio Proxy Error]:', err.message);
     return res.status(500).json({ error: 'Erro ao processar áudio: ' + err.message });

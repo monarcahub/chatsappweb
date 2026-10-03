@@ -10,6 +10,17 @@ interface AudioPlayerProps {
   messageId?: string;
 }
 
+// Sanitiza e limpa a URL do áudio removendo pontuações residuais
+const sanitizeAudioUrl = (rawUrl: string): string => {
+  if (!rawUrl) return '';
+  let clean = rawUrl.trim();
+  // Remove aspas ou delimitadores no início e fim
+  clean = clean.replace(/^["'<(\[]+|["'>)\]]+$/g, '');
+  // Remove pontuações finais comuns em links dentro de textos de chat (ex: ., ), ;, >)
+  clean = clean.replace(/[.,;:)\]>]+$/, '');
+  return clean;
+};
+
 export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   src,
   duration = '0:06',
@@ -20,6 +31,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
 }) => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const progressBarRef = useRef<HTMLDivElement | null>(null);
+  const blobUrlRef = useRef<string | null>(null);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -30,43 +42,73 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const [hasError, setHasError] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [activeUrl, setActiveUrl] = useState<string>('');
-  const [attemptedFallback, setAttemptedFallback] = useState(false);
+  // 0: direto, 1: proxy auto, 2: proxy mp3, 3: blob local, 4: falha
+  const [fallbackStep, setFallbackStep] = useState<number>(0);
 
-  // Determina a URL ideal para o áudio (.ogg / .opus / .mp3 / .wav)
-  // Se for uma URL externa http/https, usa o proxy do servidor para garantir CORS e MIME headers
-  const getInitialPlayUrl = useCallback((rawUrl: string) => {
-    if (!rawUrl) return '';
-    const cleanUrl = rawUrl.trim();
-
-    // Se já for data URI ou blob ou rota local
-    if (cleanUrl.startsWith('data:') || cleanUrl.startsWith('blob:') || cleanUrl.startsWith('/')) {
-      return cleanUrl;
-    }
-
-    // Se for URL externa, usar o proxy da aplicação que entrega com CORS e MIME correto
-    if (cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')) {
-      // Verifica se o navegador suporta OGG nativamente
-      const testAudio = typeof document !== 'undefined' ? document.createElement('audio') : null;
-      const canPlayOgg = testAudio?.canPlayType('audio/ogg; codecs=opus') || testAudio?.canPlayType('audio/ogg');
-
-      // Se for Safari/iOS (sem suporte nativo a ogg) e o arquivo for .ogg/.opus, solicita transcodificação em MP3 direto
-      const isOggFile = /\.og[ga]|\.opus/i.test(cleanUrl);
-      if (isOggFile && !canPlayOgg) {
-        return `/api/audio-proxy?url=${encodeURIComponent(cleanUrl)}&format=mp3`;
+  // Limpa Blob URL ao desmontar
+  useEffect(() => {
+    return () => {
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
       }
-
-      return `/api/audio-proxy?url=${encodeURIComponent(cleanUrl)}`;
-    }
-
-    return cleanUrl;
+    };
   }, []);
 
-  // Inicializa URL
+  // Determina se o navegador suporta OGG nativamente (Chrome, Firefox, Edge, Android = Sim; Safari iOS/macOS = Não)
+  const checkCanPlayOgg = useCallback(() => {
+    if (typeof document === 'undefined') return true;
+    const testAudio = document.createElement('audio');
+    const canOpus = testAudio.canPlayType('audio/ogg; codecs=opus');
+    const canOgg = testAudio.canPlayType('audio/ogg');
+    return Boolean(canOpus || canOgg);
+  }, []);
+
+  // Determina a primeira URL a ser tentada
+  const getInitialPlayUrl = useCallback(
+    (rawUrl: string): { url: string; initialStep: number } => {
+      const cleanUrl = sanitizeAudioUrl(rawUrl);
+      if (!cleanUrl) return { url: '', initialStep: 0 };
+
+      // Se já for data URI, blob ou caminho local
+      if (cleanUrl.startsWith('data:') || cleanUrl.startsWith('blob:') || cleanUrl.startsWith('/')) {
+        return { url: cleanUrl, initialStep: 0 };
+      }
+
+      if (cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')) {
+        const canPlayOgg = checkCanPlayOgg();
+        const isOggOrOpus = /\.og[ga]|\.opus/i.test(cleanUrl);
+
+        // Se for Safari/iOS (sem suporte nativo a ogg) e o arquivo for .ogg/.opus,
+        // inicia diretamente na transcodificação MP3 para não dar erro
+        if (isOggOrOpus && !canPlayOgg) {
+          return {
+            url: `/api/audio-proxy?url=${encodeURIComponent(cleanUrl)}&format=mp3`,
+            initialStep: 2,
+          };
+        }
+
+        // Em todos os navegadores que suportam Ogg (Chrome, Edge, Firefox, Android),
+        // toca a URL original diretamente (mais rápido, sem gargalo, nativo)
+        return { url: cleanUrl, initialStep: 0 };
+      }
+
+      return { url: cleanUrl, initialStep: 0 };
+    },
+    [checkCanPlayOgg]
+  );
+
+  // Inicializa URL quando a prop src mudar
   useEffect(() => {
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = null;
+    }
     setHasError(false);
     setErrorMessage('');
-    setAttemptedFallback(false);
-    setActiveUrl(getInitialPlayUrl(src));
+    const { url, initialStep } = getInitialPlayUrl(src);
+    setActiveUrl(url);
+    setFallbackStep(initialStep);
   }, [src, getInitialPlayUrl]);
 
   // Global Audio Coordinator: Quando qualquer áudio der Play, pausa os outros
@@ -115,9 +157,90 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
     } catch {}
   };
 
+  // Tenta o próximo nível de contingência
+  const advanceToNextFallback = useCallback(async () => {
+    const cleanUrl = sanitizeAudioUrl(src);
+    if (!cleanUrl || !cleanUrl.startsWith('http')) {
+      setHasError(true);
+      setErrorMessage('Formato incompatível ou arquivo indisponível');
+      setIsLoading(false);
+      setIsPlaying(false);
+      return;
+    }
+
+    if (fallbackStep === 0) {
+      // Passo 1: tenta via proxy com cabeçalhos e streaming
+      setFallbackStep(1);
+      setActiveUrl(`/api/audio-proxy?url=${encodeURIComponent(cleanUrl)}`);
+    } else if (fallbackStep === 1) {
+      // Passo 2: tenta via proxy com transcodificação para MP3
+      setFallbackStep(2);
+      setActiveUrl(`/api/audio-proxy?url=${encodeURIComponent(cleanUrl)}&format=mp3`);
+    } else if (fallbackStep === 2) {
+      // Passo 3: tenta download em memória no cliente e cria Blob URL
+      setFallbackStep(3);
+      setIsLoading(true);
+      try {
+        const resp = await fetch(cleanUrl);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const blob = await resp.blob();
+        if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+        const bUrl = URL.createObjectURL(blob);
+        blobUrlRef.current = bUrl;
+        setActiveUrl(bUrl);
+        setIsLoading(false);
+      } catch {
+        // Passo 4: tenta fetch via proxy como Blob
+        try {
+          const respProxy = await fetch(`/api/audio-proxy?url=${encodeURIComponent(cleanUrl)}`);
+          if (!respProxy.ok) throw new Error(`HTTP ${respProxy.status}`);
+          const blobProxy = await respProxy.blob();
+          if (blobUrlRef.current) URL.revokeObjectURL(blobUrlRef.current);
+          const bUrlProxy = URL.createObjectURL(blobProxy);
+          blobUrlRef.current = bUrlProxy;
+          setActiveUrl(bUrlProxy);
+          setIsLoading(false);
+        } catch {
+          setFallbackStep(4);
+          setHasError(true);
+          setErrorMessage('Formato incompatível ou arquivo indisponível');
+          setIsLoading(false);
+          setIsPlaying(false);
+        }
+      }
+    } else {
+      setFallbackStep(4);
+      setHasError(true);
+      setErrorMessage('Formato incompatível ou arquivo indisponível');
+      setIsLoading(false);
+      setIsPlaying(false);
+    }
+  }, [src, fallbackStep]);
+
   // Alterna Play/Pause
   const togglePlay = async (e: React.MouseEvent) => {
     e.stopPropagation();
+
+    // Se estava em erro e o usuário clicou no botão de retry, reinicia a tentativa
+    if (hasError) {
+      setHasError(false);
+      setErrorMessage('');
+      const { url, initialStep } = getInitialPlayUrl(src);
+      setActiveUrl(url);
+      setFallbackStep(initialStep);
+      setIsLoading(true);
+      setTimeout(() => {
+        if (audioRef.current) {
+          audioRef.current.play().then(() => {
+            setIsPlaying(true);
+            setIsLoading(false);
+          }).catch(() => {
+            advanceToNextFallback();
+          });
+        }
+      }, 100);
+      return;
+    }
 
     // Se for áudio simulado (sem URL válida na web)
     if (!activeUrl) {
@@ -162,19 +285,9 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         setIsPlaying(true);
         setIsLoading(false);
       } catch (err: any) {
-        console.warn('[Audio Player] Erro ao reproduzir diretamente:', err.message);
+        console.warn('[Audio Player] Erro ao reproduzir:', err.message);
         setIsLoading(false);
-
-        // Se falhou e ainda não tentou a transcodificação para MP3 no servidor (ex: Safari)
-        if (!attemptedFallback && src.startsWith('http')) {
-          setAttemptedFallback(true);
-          const fallbackUrl = `/api/audio-proxy?url=${encodeURIComponent(src)}&format=mp3`;
-          setActiveUrl(fallbackUrl);
-        } else {
-          setHasError(true);
-          setErrorMessage('Não foi possível reproduzir este áudio');
-          setIsPlaying(false);
-        }
+        advanceToNextFallback();
       }
     }
   };
@@ -219,16 +332,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
   const handleAudioError = () => {
     setIsLoading(false);
     setIsPlaying(false);
-
-    // Se o formato original .ogg falhou no navegador, tenta automaticamente via proxy MP3
-    if (!attemptedFallback && src.startsWith('http')) {
-      setAttemptedFallback(true);
-      const fallbackUrl = `/api/audio-proxy?url=${encodeURIComponent(src)}&format=mp3`;
-      setActiveUrl(fallbackUrl);
-    } else {
-      setHasError(true);
-      setErrorMessage('Formato incompatível ou arquivo indisponível');
-    }
+    advanceToNextFallback();
   };
 
   // Parser de duração passada por prop (ex: "0:42" ou "1:15")
@@ -262,6 +366,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
         ref={audioRef}
         src={activeUrl}
         preload="metadata"
+        playsInline
         onTimeUpdate={() => {
           if (audioRef.current) {
             setCurrentTime(audioRef.current.currentTime);
@@ -296,11 +401,11 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
       />
 
       <div className="flex items-center gap-3">
-        {/* Botão Play / Pause */}
+        {/* Botão Play / Pause / Retry */}
         <button
           type="button"
           onClick={togglePlay}
-          disabled={isLoading && !isPlaying}
+          disabled={isLoading && !isPlaying && !hasError}
           className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-sm transition-transform active:scale-95 cursor-pointer ${
             hasError
               ? 'bg-amber-600/80 hover:bg-amber-600 text-white'
@@ -396,7 +501,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
               {/* Link externo para baixar ou abrir o arquivo original */}
               {src.startsWith('http') && (
                 <a
-                  href={src}
+                  href={sanitizeAudioUrl(src)}
                   target="_blank"
                   rel="noopener noreferrer"
                   onClick={(e) => e.stopPropagation()}
@@ -422,7 +527,7 @@ export const AudioPlayer: React.FC<AudioPlayerProps> = ({
           </div>
           {src.startsWith('http') && (
             <a
-              href={src}
+              href={sanitizeAudioUrl(src)}
               target="_blank"
               rel="noopener noreferrer"
               className="underline font-medium hover:text-amber-500 shrink-0 text-[10px] ml-1"
