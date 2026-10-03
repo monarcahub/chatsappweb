@@ -57,10 +57,14 @@ export function useSupabaseChat(
   // URL Oficial do Webhook de Saída (n8n com responseNode que devolve o wamid)
   const OUTGOING_WEBHOOK_URL = 'https://webhook.monarcahub.com/webhook/chatsapp_saidas';
 
+  // Rastreia se a seleção inicial de conversa já foi executada para a conta atual
+  const hasInitializedSelectionRef = useRef<boolean>(false);
+
   // Troca imediata de conversas ao alternar a empresa ativa
   useEffect(() => {
     setConversations([]);
     setSelectedId(null);
+    hasInitializedSelectionRef.current = false;
   }, [currentAccountId]);
 
   // Ref para acompanhar selectedId e conversations em callbacks assíncronos
@@ -433,17 +437,39 @@ export function useSupabaseChat(
           });
 
           setConversations(formattedConvs);
-          const activeId = selectedIdRef.current && formattedConvs.some((c) => c.id === selectedIdRef.current)
-            ? selectedIdRef.current
-            : formattedConvs[0]?.id || null;
 
-          setSelectedId(activeId);
-          if (activeId) {
-            loadMessagesForConversation(activeId);
+          // Detecta se a viewport atual é dispositivo móvel (< 768px)
+          const isMobileViewport = typeof window !== 'undefined' ? window.innerWidth < 768 : false;
+
+          let targetActiveId: string | null = null;
+
+          if (selectedIdRef.current) {
+            // Se o usuário já estava dentro de uma conversa, mantém se ela ainda existir na lista
+            const stillExists = formattedConvs.some((c) => c.id === selectedIdRef.current);
+            targetActiveId = stillExists ? selectedIdRef.current : null;
+          } else if (!hasInitializedSelectionRef.current && !isMobileViewport) {
+            // No Desktop: seleciona a primeira conversa apenas na primeira carga inicial da tela
+            targetActiveId = formattedConvs[0]?.id || null;
+          } else {
+            // No Mobile (ou quando o usuário clicou em Voltar):
+            // NUNCA auto-seleciona conversas! Mantém null para que o usuário permaneça na lista
+            targetActiveId = null;
+          }
+
+          hasInitializedSelectionRef.current = true;
+
+          if (selectedIdRef.current !== targetActiveId) {
+            setSelectedId(targetActiveId);
+          }
+
+          if (targetActiveId) {
+            loadMessagesForConversation(targetActiveId);
           }
         } else {
           setConversations([]);
-          setSelectedId(null);
+          if (selectedIdRef.current !== null) {
+            setSelectedId(null);
+          }
         }
         setIsConnectedToSupabase(true);
       }
@@ -698,8 +724,10 @@ export function useSupabaseChat(
 
   // Selecionar conversa, zerar mensagens não lidas e carregar histórico da tabela 'messages'
   const selectConversation = useCallback(
-    (id: string) => {
+    (id: string | null) => {
       setSelectedId(id);
+      if (!id) return;
+
       loadMessagesForConversation(id);
 
       setConversations((prev) =>
