@@ -787,3 +787,240 @@ BEGIN
 END $$;
 `;
 
+// =========================================================================
+// RPC TRANSAÇÃO SEGURA E ATÔMICA: CRIAR NOVA EMPRESA E VINCULAR GESTOR
+// Executar no SQL Editor do Supabase para atualizar a assinatura e proteções
+// =========================================================================
+export const CREATE_NEW_ACCOUNT_RPC_SQL = `-- =========================================================================
+-- FUNÇÃO RPC: create_new_account (SEGURA, DEFINER, BUSCA POR auth.uid())
+-- =========================================================================
+CREATE OR REPLACE FUNCTION public.create_new_account(
+    p_company_name TEXT,
+    p_company_segment TEXT DEFAULT 'Serviços & Atendimento',
+    p_admin_name TEXT DEFAULT 'Administrador',
+    p_whatsapp_phone TEXT DEFAULT ''
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_email TEXT;
+    v_clean_phone TEXT;
+    v_duplicate_phone_found BOOLEAN := false;
+    v_existing_acc RECORD;
+    v_new_account RECORD;
+    v_base_slug TEXT;
+    v_slug TEXT;
+BEGIN
+    -- 1. Obter identidade exclusivamente de auth.uid()
+    v_user_id := auth.uid();
+    IF v_user_id IS NULL THEN
+        RAISE EXCEPTION 'Acesso não autorizado: usuário não autenticado no Supabase Auth.';
+    END IF;
+
+    -- Obter e-mail do usuário autenticado a partir de auth.users
+    SELECT email INTO v_email
+    FROM auth.users
+    WHERE id = v_user_id;
+
+    IF v_email IS NULL THEN
+        v_email := '';
+    END IF;
+
+    -- 2. Proteção contra duplo cadastro / retry acidental pelo mesmo usuário
+    -- Se o auth.uid() já possuir uma empresa vinculada como membro humano, reutiliza
+    SELECT a.id, a.name, a.slug, a.segment, a.whatsapp_phone, a.plan, a.created_at
+    INTO v_existing_acc
+    FROM public.account_users au
+    JOIN public.accounts a ON a.id = au.account_id
+    WHERE au.user_id = v_user_id
+      AND (au.is_ai_agent IS NULL OR au.is_ai_agent = false)
+    ORDER BY au.created_at ASC
+    LIMIT 1;
+
+    IF v_existing_acc.id IS NOT NULL THEN
+        RETURN jsonb_build_object(
+            'success', true,
+            'already_linked', true,
+            'account', jsonb_build_object(
+                'id', v_existing_acc.id,
+                'name', v_existing_acc.name,
+                'slug', v_existing_acc.slug,
+                'segment', v_existing_acc.segment,
+                'whatsapp_phone', v_existing_acc.whatsapp_phone,
+                'plan', v_existing_acc.plan,
+                'createdAt', v_existing_acc.created_at
+            ),
+            'user', jsonb_build_object(
+                'id', v_user_id,
+                'name', p_admin_name,
+                'email', v_email,
+                'role', 'admin',
+                'accountId', v_existing_acc.id,
+                'accountName', v_existing_acc.name
+            )
+        );
+    END IF;
+
+    -- 3. Detecção de forte indício de duplicidade pelo WhatsApp comercial
+    -- Normalizar removendo caracteres não numéricos
+    v_clean_phone := regexp_replace(COALESCE(p_whatsapp_phone, ''), '[^0-9]', '', 'g');
+
+    IF length(v_clean_phone) >= 8 THEN
+        SELECT true
+        INTO v_duplicate_phone_found
+        FROM public.accounts a
+        WHERE regexp_replace(COALESCE(a.whatsapp_phone, ''), '[^0-9]', '', 'g') = v_clean_phone
+           OR (length(v_clean_phone) >= 10 AND regexp_replace(COALESCE(a.whatsapp_phone, ''), '[^0-9]', '', 'g') LIKE '%' || right(v_clean_phone, 8))
+        LIMIT 1;
+
+        IF v_duplicate_phone_found THEN
+            -- Retorna aviso amigável sem expor dados sensíveis da empresa existente
+            RETURN jsonb_build_object(
+                'success', false,
+                'code', 'POSSIBLE_DUPLICATE_COMPANY',
+                'error', 'Encontramos uma empresa que pode já estar cadastrada no ChatsApp.',
+                'detail', 'Para proteger os dados da empresa, não podemos vinculá-la automaticamente à sua conta. Entre em contato com o administrador da empresa para solicitar acesso.'
+            );
+        END IF;
+    END IF;
+
+    -- 4. Gerar slug único e legível
+    v_base_slug := lower(regexp_replace(
+        translate(
+            COALESCE(NULLIF(trim(p_company_name), ''), 'empresa'),
+            'áàâãäéèêëíìîïóòôõöúùûüçñÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇÑ',
+            'aaaaaeeeeiiiiooooouuuucnAAAAAEEEEIIIIOOOOOUUUUCN'
+        ),
+        '[^a-z0-9]+', '-', 'g'
+    ));
+    v_base_slug := trim(both '-' from v_base_slug);
+    IF v_base_slug IS NULL OR v_base_slug = '' THEN
+        v_base_slug := 'empresa';
+    END IF;
+
+    v_slug := v_base_slug || '-' || floor(1000 + random() * 9000)::text;
+    WHILE EXISTS (SELECT 1 FROM public.accounts WHERE slug = v_slug) LOOP
+        v_slug := v_base_slug || '-' || floor(1000 + random() * 9000)::text;
+    END LOOP;
+
+    -- 5. Inserir a nova empresa em public.accounts
+    INSERT INTO public.accounts (
+        name,
+        slug,
+        segment,
+        plan,
+        whatsapp_phone
+    )
+    VALUES (
+        trim(p_company_name),
+        v_slug,
+        COALESCE(NULLIF(trim(p_company_segment), ''), 'Serviços & Atendimento'),
+        'pro',
+        trim(COALESCE(p_whatsapp_phone, ''))
+    )
+    RETURNING id, name, slug, segment, plan, whatsapp_phone, created_at
+    INTO v_new_account;
+
+    -- 6. Inserir vínculo em public.account_users (usuário gestor como admin)
+    INSERT INTO public.account_users (
+        account_id,
+        user_id,
+        name,
+        email,
+        role,
+        is_ai_agent
+    )
+    VALUES (
+        v_new_account.id,
+        v_user_id,
+        COALESCE(NULLIF(trim(p_admin_name), ''), 'Administrador'),
+        v_email,
+        'admin',
+        false
+    );
+
+    -- 7. Inserir atendente Agente IA da nova empresa (user_id = NULL pois não é usuário Auth)
+    INSERT INTO public.account_users (
+        account_id,
+        user_id,
+        name,
+        email,
+        role,
+        is_ai_agent
+    )
+    VALUES (
+        v_new_account.id,
+        NULL,
+        'Agente IA - ' || trim(p_company_name),
+        'ia.' || v_slug || '@monarcahub.com',
+        'ai_agent',
+        true
+    );
+
+    -- 8. Atualizar/criar perfil do gestor em public.profiles (preserva telefone pessoal existente ou deixa NULL)
+    INSERT INTO public.profiles (
+        id,
+        name,
+        mood,
+        role_title
+    )
+    VALUES (
+        v_user_id,
+        COALESCE(NULLIF(trim(p_admin_name), ''), 'Administrador'),
+        'Disponível',
+        'Gestor / Administrador'
+    )
+    ON CONFLICT (id) DO UPDATE SET
+        name = COALESCE(NULLIF(EXCLUDED.name, ''), public.profiles.name);
+
+    -- 9. Inicializar Cérebro IA da empresa
+    INSERT INTO public.cerebro_ia (
+        account_id,
+        user_id,
+        business_name,
+        tone_of_voice,
+        is_active
+    )
+    VALUES (
+        v_new_account.id,
+        v_user_id,
+        trim(p_company_name),
+        'Amigável, acolhedor e consultivo',
+        true
+    )
+    ON CONFLICT (account_id) DO NOTHING;
+
+    -- 10. Retornar dados da empresa criada
+    RETURN jsonb_build_object(
+        'success', true,
+        'account', jsonb_build_object(
+            'id', v_new_account.id,
+            'name', v_new_account.name,
+            'slug', v_new_account.slug,
+            'segment', v_new_account.segment,
+            'whatsapp_phone', v_new_account.whatsapp_phone,
+            'plan', v_new_account.plan,
+            'createdAt', v_new_account.created_at
+        ),
+        'user', jsonb_build_object(
+            'id', v_user_id,
+            'name', p_admin_name,
+            'email', v_email,
+            'role', 'admin',
+            'accountId', v_new_account.id,
+            'accountName', v_new_account.name
+        )
+    );
+END;
+$$;
+
+-- Permissões de execução estritas
+REVOKE EXECUTE ON FUNCTION public.create_new_account(TEXT, TEXT, TEXT, TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.create_new_account(TEXT, TEXT, TEXT, TEXT) FROM anon;
+GRANT EXECUTE ON FUNCTION public.create_new_account(TEXT, TEXT, TEXT, TEXT) TO authenticated;
+`;
+

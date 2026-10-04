@@ -12,7 +12,12 @@ import {
   FileText,
   Eye,
   EyeOff,
-  AlertCircle
+  AlertCircle,
+  Phone,
+  Building2,
+  Briefcase,
+  UserCheck,
+  Info
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -38,10 +43,24 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
   const [newCompanySegment, setNewCompanySegment] = useState('');
   const [newAdminName, setNewAdminName] = useState('');
   const [newEmail, setNewEmail] = useState('');
+  const [newWhatsappPhone, setNewWhatsappPhone] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newConfirmPassword, setNewConfirmPassword] = useState('');
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showNewConfirmPassword, setShowNewConfirmPassword] = useState(false);
+
+  // Estado para detecção de empresa possivelmente já cadastrada
+  const [duplicateWarning, setDuplicateWarning] = useState<{ message: string; detail: string } | null>(null);
+  const [isAlreadyMemberModalOpen, setIsAlreadyMemberModalOpen] = useState(false);
+
+  // Máscara amigável de telefone brasileiro
+  const formatPhone = (val: string) => {
+    const digits = val.replace(/\D/g, '').slice(0, 11);
+    if (digits.length <= 2) return digits.length ? `(${digits}` : '';
+    if (digits.length <= 6) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
+    if (digits.length <= 10) return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+    return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7, 11)}`;
+  };
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,9 +84,26 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
     e.preventDefault();
     if (isLoading) return;
     setRegisterError(null);
+    setDuplicateWarning(null);
 
-    if (!newCompanyName.trim() || !newEmail.trim()) {
-      setRegisterError('Por favor preencha o nome da empresa e o e-mail.');
+    const cleanCompany = newCompanyName.trim();
+    const cleanAdmin = newAdminName.trim();
+    const cleanMail = newEmail.trim();
+    const cleanPhone = newWhatsappPhone.trim();
+    const digits = cleanPhone.replace(/\D/g, '');
+
+    if (!cleanCompany || !cleanMail) {
+      setRegisterError('Por favor preencha o nome da empresa e o e-mail corporativo.');
+      return;
+    }
+
+    if (!cleanAdmin) {
+      setRegisterError('Por favor informe seu nome (Gestor).');
+      return;
+    }
+
+    if (digits.length < 10) {
+      setRegisterError('Por favor informe um WhatsApp/telefone comercial válido com DDD.');
       return;
     }
 
@@ -84,15 +120,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
     setIsLoading(true);
     try {
       const res = await registerAccount(
-        newCompanyName.trim(),
+        cleanCompany,
         newCompanySegment.trim() || 'Serviços & Atendimento',
-        newAdminName.trim() || 'Administrador',
-        newEmail.trim(),
-        newPassword
+        cleanAdmin,
+        cleanMail,
+        newPassword,
+        cleanPhone
       );
 
       if (!res.success) {
-        setRegisterError(res.error || 'Falha ao registrar empresa. Tente novamente.');
+        if (res.isPossibleDuplicate) {
+          setDuplicateWarning({
+            message: res.error || 'Encontramos uma empresa que pode já estar cadastrada no ChatsApp.',
+            detail:
+              res.detail ||
+              'Para proteger os dados da empresa, não podemos vinculá-la automaticamente à sua conta. Entre em contato com o administrador da empresa para solicitar acesso.',
+          });
+        } else {
+          setRegisterError(res.error || 'Falha ao registrar empresa. Tente novamente.');
+        }
       }
     } catch (err: any) {
       setRegisterError(err?.message || 'Erro de conexão ao criar workspace.');
@@ -295,6 +341,65 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                 )}
               </button>
             </form>
+          ) : duplicateWarning ? (
+            /* Alerta Amigável de Empresa Possivelmente Já Cadastrada */
+            <div className="space-y-4 animate-in fade-in duration-200">
+              <div
+                className={`p-4 rounded-2xl border flex items-start gap-3 ${
+                  darkMode
+                    ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+                    : 'bg-amber-50 border-amber-200 text-amber-900'
+                }`}
+              >
+                <Shield className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                <div className="space-y-1.5">
+                  <h3 className="font-semibold text-sm leading-snug">
+                    {duplicateWarning.message}
+                  </h3>
+                  <p className="text-xs leading-relaxed opacity-90">
+                    {duplicateWarning.detail}
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsAlreadyMemberModalOpen(true)}
+                  className="w-full py-3 rounded-xl bg-[#00a884] hover:bg-[#009374] active:scale-[0.99] text-white font-semibold text-sm transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <UserCheck className="w-4 h-4" />
+                  Já faço parte desta empresa
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDuplicateWarning(null);
+                    setRegisterError(null);
+                  }}
+                  className={`w-full py-2.5 rounded-xl border text-xs font-semibold transition-colors cursor-pointer ${
+                    darkMode
+                      ? 'border-[#313d45] hover:bg-[#313d45] text-[#8696a0]'
+                      : 'border-gray-300 hover:bg-gray-100 text-gray-700'
+                  }`}
+                >
+                  Tentar com outro WhatsApp ou dados
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDuplicateWarning(null);
+                    setMode('login');
+                    setEmail(newEmail);
+                  }}
+                  className="w-full text-center text-xs text-[#00a884] hover:underline pt-1 cursor-pointer"
+                >
+                  Ir para o Login com meu e-mail
+                </button>
+              </div>
+            </div>
           ) : (
             /* Formulário de Cadastro */
             <form onSubmit={handleRegisterSubmit} className="space-y-3">
@@ -309,21 +414,28 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                 <label className="text-xs font-medium text-[#8696a0] mb-1 block">
                   Nome da Empresa
                 </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ex: Prime Odonto, Imóveis Alpha"
-                  value={newCompanyName}
-                  onChange={(e) => {
-                    setNewCompanyName(e.target.value);
-                    if (registerError) setRegisterError(null);
-                  }}
-                  className={`w-full px-3.5 py-2.5 rounded-xl border text-sm focus:outline-none placeholder:text-[#8696a0] ${
+                <div
+                  className={`flex items-center gap-2.5 px-3.5 py-2 rounded-xl border transition-colors ${
                     darkMode
-                      ? 'bg-[#111b21] border-[#313d45] focus:border-[#00a884]'
-                      : 'bg-[#f7f9fa] border-[#d1d7db] focus:border-[#00a884]'
+                      ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
+                      : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
                   }`}
-                />
+                >
+                  <Building2 className="w-4 h-4 text-[#8696a0] shrink-0" />
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ex: Prime Odonto, Imóveis Alpha"
+                    value={newCompanyName}
+                    onChange={(e) => {
+                      setNewCompanyName(e.target.value);
+                      if (registerError) setRegisterError(null);
+                    }}
+                    className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
+                      darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'
+                    }`}
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -331,17 +443,24 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                   <label className="text-xs font-medium text-[#8696a0] mb-1 block">
                     Segmento / Ramo
                   </label>
-                  <input
-                    type="text"
-                    placeholder="Ex: Saúde, Vendas"
-                    value={newCompanySegment}
-                    onChange={(e) => setNewCompanySegment(e.target.value)}
-                    className={`w-full px-3.5 py-2.5 rounded-xl border text-sm focus:outline-none placeholder:text-[#8696a0] ${
+                  <div
+                    className={`flex items-center gap-2 px-3 py-2 rounded-xl border transition-colors ${
                       darkMode
-                        ? 'bg-[#111b21] border-[#313d45] focus:border-[#00a884]'
-                        : 'bg-[#f7f9fa] border-[#d1d7db] focus:border-[#00a884]'
+                        ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
+                        : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
                     }`}
-                  />
+                  >
+                    <Briefcase className="w-4 h-4 text-[#8696a0] shrink-0" />
+                    <input
+                      type="text"
+                      placeholder="Ex: Saúde, Imóveis"
+                      value={newCompanySegment}
+                      onChange={(e) => setNewCompanySegment(e.target.value)}
+                      className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
+                        darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'
+                      }`}
+                    />
+                  </div>
                 </div>
 
                 <div>
@@ -354,10 +473,39 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                     placeholder="Ex: Alex Belmonte"
                     value={newAdminName}
                     onChange={(e) => setNewAdminName(e.target.value)}
-                    className={`w-full px-3.5 py-2.5 rounded-xl border text-sm focus:outline-none placeholder:text-[#8696a0] ${
+                    className={`w-full px-3.5 py-2 rounded-xl border text-sm focus:outline-none placeholder:text-[#8696a0] ${
                       darkMode
                         ? 'bg-[#111b21] border-[#313d45] focus:border-[#00a884]'
                         : 'bg-[#f7f9fa] border-[#d1d7db] focus:border-[#00a884]'
+                    }`}
+                  />
+                </div>
+              </div>
+
+              {/* WhatsApp Comercial da Empresa */}
+              <div>
+                <label className="text-xs font-medium text-[#8696a0] mb-1 block">
+                  WhatsApp Comercial da Empresa
+                </label>
+                <div
+                  className={`flex items-center gap-2.5 px-3.5 py-2 rounded-xl border transition-colors ${
+                    darkMode
+                      ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
+                      : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
+                  }`}
+                >
+                  <Phone className="w-4 h-4 text-[#8696a0] shrink-0" />
+                  <input
+                    type="tel"
+                    required
+                    placeholder="(11) 99999-9999"
+                    value={newWhatsappPhone}
+                    onChange={(e) => {
+                      setNewWhatsappPhone(formatPhone(e.target.value));
+                      if (registerError) setRegisterError(null);
+                    }}
+                    className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
+                      darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'
                     }`}
                   />
                 </div>
@@ -486,7 +634,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                 ) : (
                   <>
                     <Sparkles className="w-4 h-4" />
-                    Cadastrar e Acessar
+                    Cadastrar Empresa
                   </>
                 )}
               </button>
@@ -577,6 +725,76 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                 className="px-4 py-2 rounded-xl bg-[#00a884] hover:bg-[#009374] text-white font-semibold text-xs transition-colors"
               >
                 Entendi e Concordo
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Explicativo: Já faço parte desta empresa */}
+      {isAlreadyMemberModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fadeIn">
+          <div
+            className={`w-full max-w-md rounded-2xl shadow-2xl border p-6 ${
+              darkMode ? 'bg-[#202c33] border-[#313d45] text-[#e9edef]' : 'bg-white border-[#d1d7db] text-[#111b21]'
+            }`}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-[#313d45]/60 mb-4">
+              <div className="flex items-center gap-2.5">
+                <UserCheck className="w-5 h-5 text-[#00a884]" />
+                <h2 className="text-base font-bold">Acesso à Empresa Existente</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAlreadyMemberModalOpen(false)}
+                className="p-1 rounded-lg hover:bg-white/10 text-[#8696a0] hover:text-white transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs leading-relaxed">
+              <div
+                className={`p-3.5 rounded-xl border flex items-start gap-2.5 ${
+                  darkMode ? 'bg-[#111b21] border-[#313d45] text-[#8696a0]' : 'bg-gray-50 border-gray-200 text-gray-700'
+                }`}
+              >
+                <Info className="w-4 h-4 text-[#00a884] shrink-0 mt-0.5" />
+                <span>
+                  Por questões rigorosas de segurança e sigilo de dados, nenhuma conta de usuário é vinculada automaticamente a uma empresa cadastrada.
+                </span>
+              </div>
+
+              <p className={darkMode ? 'text-[#8696a0]' : 'text-[#667781]'}>
+                Para ter acesso ao ambiente da empresa, solicite ao <strong>administrador / gestor</strong> da mesma que adicione seu e-mail (<strong>{newEmail || 'seu e-mail corporativo'}</strong>) na lista de atendentes do ChatsApp.
+              </p>
+
+              <p className={darkMode ? 'text-[#8696a0]' : 'text-[#667781]'}>
+                Assim que ele conceder seu acesso, basta fazer login com seu e-mail e senha para gerenciar seus canais e atendimentos.
+              </p>
+            </div>
+
+            <div className="mt-5 pt-3 border-t border-[#313d45]/60 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAlreadyMemberModalOpen(false);
+                  setDuplicateWarning(null);
+                  setMode('login');
+                  setEmail(newEmail);
+                }}
+                className="px-4 py-2.5 rounded-xl bg-[#00a884] hover:bg-[#009374] text-white font-semibold text-xs transition-colors cursor-pointer"
+              >
+                Ir para o Login
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsAlreadyMemberModalOpen(false)}
+                className={`px-3 py-2 rounded-xl border text-xs font-semibold transition-colors cursor-pointer ${
+                  darkMode ? 'border-[#313d45] hover:bg-[#313d45] text-[#8696a0]' : 'border-gray-300 hover:bg-gray-100 text-gray-700'
+                }`}
+              >
+                Fechar
               </button>
             </div>
           </div>

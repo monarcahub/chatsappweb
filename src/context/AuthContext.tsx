@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { Account, AuthUser } from '../types';
 import { supabase, isSupabaseConfigured, ensureSupabaseConfig } from '../lib/supabase';
 
@@ -10,7 +10,20 @@ interface AuthContextType {
   login: (email: string, password?: string, targetAccountId?: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => void;
   switchAccount: (accountId: string) => void;
-  registerAccount: (accountName: string, segment: string, adminName: string, email: string, password: string) => Promise<{ success: boolean; account?: Account; error?: string }>;
+  registerAccount: (
+    accountName: string,
+    segment: string,
+    adminName: string,
+    email: string,
+    password: string,
+    whatsappPhone?: string
+  ) => Promise<{
+    success: boolean;
+    account?: Account;
+    error?: string;
+    isPossibleDuplicate?: boolean;
+    detail?: string;
+  }>;
   updateUserProfile: (updates: Partial<AuthUser>) => Promise<void> | void;
   updateCurrentAccount: (updates: Partial<Account>) => Promise<{ success: boolean; error?: string }> | void;
 }
@@ -107,6 +120,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return null;
   });
 
+  // Flag de bloqueio para impedir que syncUserAccountsFromDb execute durante o onboarding
+  const isRegisteringRef = useRef(false);
+
   // Salvar no localStorage sempre que houver mudanças
   useEffect(() => {
     if (user) {
@@ -135,45 +151,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Sincroniza em segundo plano estritamente as empresas reais vinculadas ao usuário logado via account_users
   useEffect(() => {
     const syncUserAccountsFromDb = async () => {
-      if (!user?.id && !user?.email) return;
+      // Se houver processo de onboarding / cadastro em andamento, não sobrescreve
+      if (isRegisteringRef.current) return;
+      if (!user?.id) return;
+
       try {
         await ensureSupabaseConfig();
         if (!isSupabaseConfigured) return;
 
-        let userRows: any[] | null = null;
-        if (user.id) {
-          const { data: byUserId } = await supabase
-            .from('account_users')
-            .select('*, accounts(*)')
-            .eq('user_id', user.id);
+        // Autorização estrita: auth.uid() -> account_users.user_id = user.id
+        const { data: byUserId, error: byUserIdErr } = await supabase
+          .from('account_users')
+          .select('account_id, role, is_ai_agent, accounts(*)')
+          .eq('user_id', user.id);
 
-          if (byUserId && byUserId.length > 0) {
-            userRows = byUserId;
-          }
+        if (byUserIdErr) {
+          console.warn('Erro ao sincronizar account_users:', byUserIdErr);
+          return;
         }
 
-        if ((!userRows || userRows.length === 0) && user.email) {
-          const cleanEmail = user.email.toLowerCase().trim();
-          const { data: byEmail } = await supabase
-            .from('account_users')
-            .select('*, accounts(*)')
-            .eq('email', cleanEmail);
+        // Se o onboarding foi iniciado durante a chamada, aborta sem alterar o estado
+        if (isRegisteringRef.current) return;
 
-          if (byEmail && byEmail.length > 0) {
-            userRows = byEmail;
-            if (user.id) {
-              supabase
-                .from('account_users')
-                .update({ user_id: user.id })
-                .eq('email', cleanEmail)
-                .is('user_id', null)
-                .then(() => {});
-            }
-          }
-        }
-
-        if (userRows) {
-          const userAccounts: Account[] = userRows
+        if (byUserId) {
+          const userAccounts: Account[] = byUserId
+            .filter((r: any) => r && (r.is_ai_agent === null || r.is_ai_agent === false))
             .map((r: any) => r.accounts)
             .filter((a: any) => Boolean(a && a.id))
             .map((a: any) => mapDbAccountToAccount(a));
@@ -197,9 +199,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             setCurrentAccount((prev) => {
               if (prev.id === 'all' && userAccounts.length > 1) return prev;
               const exists = userAccounts.some((a) => a.id === prev.id);
-              return (exists && prev.id !== '') ? prev : userAccounts[0];
+              return exists && prev.id !== '' ? prev : userAccounts[0];
             });
-          } else {
+          } else if (!isRegisteringRef.current) {
             // Nenhuma conta vinculada a este usuário no banco de dados
             setAvailableAccounts([]);
             setCurrentAccount(UNLINKED_ACCOUNT);
@@ -770,26 +772,69 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Cadastro de nova empresa: supabase.auth.signUp() -> supabase.rpc('create_new_account') -> hidratação
+  // Cadastro de nova empresa: supabase.auth.signUp() -> supabase.rpc('create_new_account') -> hidratação estrita
   const registerAccount = async (
     accountName: string,
     segment: string,
     adminName: string,
     email: string,
-    password: string
-  ): Promise<{ success: boolean; account?: Account; error?: string }> => {
-    const cleanEmail = email.trim().toLowerCase();
-    const cleanAdminName = adminName.trim() || 'Administrador';
-    const cleanCompanyName = accountName.trim();
-    const cleanSegment = segment.trim() || 'Serviços & Atendimento';
-
+    password: string,
+    whatsappPhone: string = ''
+  ): Promise<{
+    success: boolean;
+    account?: Account;
+    error?: string;
+    isPossibleDuplicate?: boolean;
+    detail?: string;
+  }> => {
+    isRegisteringRef.current = true;
     try {
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanAdminName = adminName.trim() || 'Administrador';
+      const cleanCompanyName = accountName.trim();
+      const cleanSegment = segment.trim() || 'Serviços & Atendimento';
+      const cleanWhatsappPhone = whatsappPhone.trim();
+      const normalizedPhone = cleanWhatsappPhone.replace(/\D/g, '');
+
       await ensureSupabaseConfig();
       if (!isSupabaseConfigured) {
         return {
           success: false,
           error: 'Serviço de autenticação não configurado no cliente.',
         };
+      }
+
+      // Verificação de segurança prévia de duplicidade pelo WhatsApp comercial
+      if (normalizedPhone.length >= 8) {
+        try {
+          const { data: existingAccounts } = await supabase
+            .from('accounts')
+            .select('id, whatsapp_phone');
+
+          if (existingAccounts && existingAccounts.length > 0) {
+            const hasDuplicate = existingAccounts.some((acc: any) => {
+              const dbPhone = (acc.whatsapp_phone || '').replace(/\D/g, '');
+              if (!dbPhone || dbPhone.length < 8) return false;
+              return (
+                dbPhone === normalizedPhone ||
+                (normalizedPhone.length >= 10 && dbPhone.endsWith(normalizedPhone.slice(-8))) ||
+                (dbPhone.length >= 10 && normalizedPhone.endsWith(dbPhone.slice(-8)))
+              );
+            });
+
+            if (hasDuplicate) {
+              return {
+                success: false,
+                isPossibleDuplicate: true,
+                error: 'Encontramos uma empresa que pode já estar cadastrada no ChatsApp.',
+                detail:
+                  'Para proteger os dados da empresa, não podemos vinculá-la automaticamente à sua conta. Entre em contato com o administrador da empresa para solicitar acesso.',
+              };
+            }
+          }
+        } catch (checkErr) {
+          console.warn('Checagem prévia de duplicidade ignorada por RLS:', checkErr);
+        }
       }
 
       // 1. Criar usuário no Supabase Auth com senha e metadados completos
@@ -801,6 +846,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             name: cleanAdminName,
             company_name: cleanCompanyName,
             company_segment: cleanSegment,
+            whatsapp_phone: cleanWhatsappPhone,
           },
         },
       });
@@ -826,163 +872,159 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
-      // Salva dados no localStorage para auto-provisionamento caso o usuário confirme o e-mail posteriormente
-      try {
-        localStorage.setItem(
-          `pending_reg_${cleanEmail}`,
-          JSON.stringify({
-            companyName: cleanCompanyName,
-            segment: cleanSegment,
-            adminName: cleanAdminName,
-          })
-        );
-      } catch {}
-
-      let registeredAcc: Account | null = null;
-      let registeredUser: AuthUser | null = null;
-
-      // Se a sessão estiver ativa (ex: "Confirm email" desligado no Supabase):
-      if (signUpData.session) {
-        // 2. Chamar a RPC transacional create_new_account com privilégios seguros
-        try {
-          const { data: rpcResult, error: rpcError } = await supabase.rpc('create_new_account', {
-            p_company_name: cleanCompanyName,
-            p_company_segment: cleanSegment,
-            p_admin_name: cleanAdminName,
-          });
-
-          if (!rpcError && rpcResult?.account) {
-            const rawAccount = rpcResult.account || {};
-            const rawUser = rpcResult.user || {};
-
-            registeredAcc = {
-              id: rawAccount.id || authUser.id,
-              name: rawAccount.name || cleanCompanyName,
-              slug: rawAccount.slug || 'empresa',
-              segment: rawAccount.segment || cleanSegment,
-              whatsappPhone: rawAccount.whatsapp_phone || rawAccount.whatsappPhone || '',
-              plan: rawAccount.plan || 'Plano Pro Omnichannel',
-              createdAt: rawAccount.createdAt || new Date().toISOString(),
-            };
-
-            registeredUser = {
-              id: rawUser.id || authUser.id,
-              name: rawUser.name || cleanAdminName,
-              email: rawUser.email || cleanEmail,
-              role: rawUser.role || 'admin',
-              accountId: registeredAcc.id,
-              accountName: registeredAcc.name,
-            };
-          }
-        } catch (rpcEx) {
-          console.warn('RPC create_new_account falhou, tentando fallback direto:', rpcEx);
-        }
-
-        // 3. Fallback de inserção direta caso a RPC não tenha sido criada no banco ainda
-        if (!registeredAcc) {
-          try {
-            const baseSlug = cleanCompanyName
-              .toLowerCase()
-              .normalize('NFD')
-              .replace(/[\u0300-\u036f]/g, '')
-              .replace(/[^a-z0-9]/g, '-')
-              .replace(/-+/g, '-')
-              .replace(/^-|-$/g, '') || 'empresa';
-            const slug = `${baseSlug}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-            const { data: createdAcc } = await supabase
-              .from('accounts')
-              .insert({
-                name: cleanCompanyName,
-                slug,
-                segment: cleanSegment,
-                plan: 'pro',
-              })
-              .select('*')
-              .single();
-
-            if (createdAcc) {
-              await supabase.from('account_users').insert([
-                {
-                  account_id: createdAcc.id,
-                  user_id: authUser.id,
-                  name: cleanAdminName,
-                  email: cleanEmail,
-                  role: 'admin',
-                  is_ai_agent: false,
-                },
-                {
-                  account_id: createdAcc.id,
-                  name: `Agente IA - ${cleanCompanyName}`,
-                  email: `ia.${slug}@monarcahub.com`,
-                  role: 'ai_agent',
-                  is_ai_agent: true,
-                },
-              ]);
-
-              await supabase.from('cerebro_ia').upsert(
-                {
-                  account_id: createdAcc.id,
-                  user_id: authUser.id,
-                  business_name: cleanCompanyName,
-                  tone_of_voice: 'Amigável, acolhedor e consultivo',
-                  is_active: true,
-                },
-                { onConflict: 'account_id' }
-              );
-
-              registeredAcc = mapDbAccountToAccount(createdAcc);
-              registeredUser = {
-                id: authUser.id,
-                name: cleanAdminName,
-                email: cleanEmail,
-                role: 'admin',
-                accountId: createdAcc.id,
-                accountName: createdAcc.name,
-              };
-            }
-          } catch (directEx) {
-            console.warn('Erro ao provisionar empresa diretamente:', directEx);
-          }
-        }
-
-        if (registeredAcc && registeredUser) {
-          setAvailableAccounts([registeredAcc]);
-          setCurrentAccount(registeredAcc);
-          setUser(registeredUser);
-
-          try {
-            localStorage.setItem(STORAGE_KEY_ACCOUNT, JSON.stringify(registeredAcc));
-            localStorage.setItem(STORAGE_KEY_ALL_ACCOUNTS, JSON.stringify([registeredAcc]));
-            localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(registeredUser));
-            localStorage.removeItem(`pending_reg_${cleanEmail}`);
-          } catch {}
-
-          return { success: true, account: registeredAcc };
-        }
-      }
-
       // Se a confirmação de e-mail estiver ativa no projeto Supabase, a sessão vem nula
       if (!signUpData.session) {
         return {
           success: false,
-          error: 'Cadastro criado! A confirmação de e-mail está ativada no seu Supabase. Desative "Confirm email" em Authentication -> Providers -> Email para acesso imediato sem necessidade de confirmação.',
+          error:
+            'Cadastro criado! A confirmação de e-mail está ativada no seu Supabase. Desative "Confirm email" em Authentication -> Providers -> Email para acesso imediato sem necessidade de confirmação.',
         };
       }
 
+      // 2. Chamar a RPC transacional create_new_account com privilégios seguros
+      let rpcResult: any = null;
+      let rpcError: any = null;
+
       try {
-        localStorage.setItem(STORAGE_KEY_ACCOUNT, JSON.stringify(registeredAcc));
-        localStorage.setItem(STORAGE_KEY_ALL_ACCOUNTS, JSON.stringify([registeredAcc]));
+        const call4 = await supabase.rpc('create_new_account', {
+          p_company_name: cleanCompanyName,
+          p_company_segment: cleanSegment,
+          p_admin_name: cleanAdminName,
+          p_whatsapp_phone: cleanWhatsappPhone,
+        });
+
+        if (call4.error && call4.error.code === 'PGRST202') {
+          // Se o banco ainda não recebeu a atualização com p_whatsapp_phone, chama versão com 3 params
+          const call3 = await supabase.rpc('create_new_account', {
+            p_company_name: cleanCompanyName,
+            p_company_segment: cleanSegment,
+            p_admin_name: cleanAdminName,
+          });
+          rpcResult = call3.data;
+          rpcError = call3.error;
+        } else {
+          rpcResult = call4.data;
+          rpcError = call4.error;
+        }
+      } catch (rpcEx: any) {
+        rpcError = rpcEx;
+      }
+
+      // Se a RPC detectar forte indício de empresa já cadastrada
+      if (
+        rpcResult &&
+        (rpcResult.success === false || rpcResult.code === 'POSSIBLE_DUPLICATE_COMPANY')
+      ) {
+        return {
+          success: false,
+          isPossibleDuplicate: true,
+          error:
+            rpcResult.error || 'Encontramos uma empresa que pode já estar cadastrada no ChatsApp.',
+          detail:
+            rpcResult.detail ||
+            'Para proteger os dados da empresa, não podemos vinculá-la automaticamente à sua conta. Entre em contato com o administrador da empresa para solicitar acesso.',
+        };
+      }
+
+      if (rpcError) {
+        console.error('Falha na RPC create_new_account:', rpcError);
+        return {
+          success: false,
+          error: rpcError.message || 'Falha ao inicializar espaço da empresa.',
+        };
+      }
+
+      // 3. REIDRATAÇÃO DIRETA NO BANCO (NÃO DEPENDER SOMENTE DO RETORNO DA RPC):
+      // Consulta novamente o banco usando exclusivamente: account_users.user_id = auth.user.id
+      const { data: userAccountsData, error: uaError } = await supabase
+        .from('account_users')
+        .select('account_id, role, is_ai_agent, accounts(*)')
+        .eq('user_id', authUser.id);
+
+      if (uaError) {
+        console.warn('Aviso ao consultar vínculos após create_new_account:', uaError);
+      }
+
+      const freshAccounts: Account[] = (userAccountsData || [])
+        .filter((r: any) => r && (r.is_ai_agent === null || r.is_ai_agent === false))
+        .map((r: any) => r.accounts)
+        .filter((a: any) => Boolean(a && a.id))
+        .map((a: any) => mapDbAccountToAccount(a));
+
+      const createdAccId = rpcResult?.account?.id;
+      let targetAccount = freshAccounts.find((a) => a.id === createdAccId);
+
+      // Se a conta não apareceu ainda no select direto de account_users devido a atraso de replicação,
+      // usa os dados retornados pela RPC transacional
+      if (!targetAccount && rpcResult?.account) {
+        targetAccount = {
+          id: rpcResult.account.id,
+          name: rpcResult.account.name || cleanCompanyName,
+          slug: rpcResult.account.slug || 'empresa',
+          segment: rpcResult.account.segment || cleanSegment,
+          whatsappPhone: rpcResult.account.whatsapp_phone || cleanWhatsappPhone,
+          plan: rpcResult.account.plan || 'Plano Pro Omnichannel',
+          createdAt: rpcResult.account.createdAt || new Date().toISOString(),
+        };
+        freshAccounts.unshift(targetAccount);
+      } else if (!targetAccount && freshAccounts.length > 0) {
+        targetAccount = freshAccounts[0];
+      }
+
+      if (!targetAccount) {
+        return {
+          success: false,
+          error:
+            'A empresa foi criada no sistema, mas não foi possível carregar os dados no momento. Por favor faça login com seu e-mail e senha.',
+        };
+      }
+
+      // Se o número de WhatsApp foi fornecido e a conta ainda não o possui preenchido, atualiza
+      if (cleanWhatsappPhone && !targetAccount.whatsappPhone) {
+        targetAccount.whatsappPhone = cleanWhatsappPhone;
+        supabase
+          .from('accounts')
+          .update({ whatsapp_phone: cleanWhatsappPhone })
+          .eq('id', targetAccount.id)
+          .then(() => {});
+      }
+
+      const activeAccountsList = freshAccounts.length > 0 ? freshAccounts : [targetAccount];
+
+      const registeredUser: AuthUser = {
+        id: authUser.id,
+        name: cleanAdminName,
+        email: cleanEmail,
+        role: 'admin',
+        accountId: targetAccount.id,
+        accountName: targetAccount.name,
+        phone: cleanWhatsappPhone,
+        role_title: 'Gestor / Administrador',
+        mood: 'Disponível',
+      };
+
+      // Atualiza o estado da aplicação
+      setAvailableAccounts(activeAccountsList);
+      setCurrentAccount(targetAccount);
+      setUser(registeredUser);
+
+      // Persistência local no navegador
+      try {
+        localStorage.setItem(STORAGE_KEY_ACCOUNT, JSON.stringify(targetAccount));
+        localStorage.setItem(STORAGE_KEY_ALL_ACCOUNTS, JSON.stringify(activeAccountsList));
         localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(registeredUser));
+        localStorage.removeItem(`pending_reg_${cleanEmail}`);
       } catch {}
 
-      return { success: true, account: registeredAcc };
+      return { success: true, account: targetAccount };
     } catch (err: any) {
       console.error('[Supabase] Falha no fluxo de cadastro:', err);
       return {
         success: false,
         error: err?.message || 'Erro inesperado ao registrar empresa. Tente novamente.',
       };
+    } finally {
+      isRegisteringRef.current = false;
     }
   };
 
