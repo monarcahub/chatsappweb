@@ -1,4 +1,4 @@
-export type ChannelType = 'whatsapp' | 'instagram' | 'webchat';
+export type ChannelType = 'whatsapp' | 'instagram' | 'webchat' | 'telegram';
 
 export type ChannelName = 'whatsapp_principal' | 'instagram_comercial' | 'chat_site' | string;
 

@@ -83,7 +83,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
             <label className={`block font-semibold mb-1.5 ${darkMode ? 'text-[#8696a0]' : 'text-[#54656f]'}`}>
               Canal de Entrada
             </label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <button
                 type="button"
                 onClick={() => setChannel('whatsapp')}
@@ -112,6 +112,21 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
               >
                 <Instagram className="w-3.5 h-3.5" />
                 <span>Instagram</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setChannel('telegram')}
+                className={`py-2 px-3 rounded-lg font-semibold flex items-center justify-center gap-1.5 border transition-all ${
+                  channel === 'telegram'
+                    ? 'bg-[#0088cc] text-white border-transparent'
+                    : darkMode
+                    ? 'bg-[#202c33] border-[#222e35] text-[#8696a0]'
+                    : 'bg-gray-100 border-gray-200 text-[#54656f]'
+                }`}
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>Telegram</span>
               </button>
 
               <button
