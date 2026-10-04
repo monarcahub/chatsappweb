@@ -107,6 +107,56 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     }
   }, []);
 
+  // Suporte a Seleção de Mensagens por Toque Prolongado (Long Press / Pressionar na área da mensagem)
+  const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const touchStartPosRef = useRef<{ x: number; y: number } | null>(null);
+  const didLongPressRef = useRef(false);
+
+  const startLongPress = (msgId: string, clientX: number, clientY: number) => {
+    touchStartPosRef.current = { x: clientX, y: clientY };
+    didLongPressRef.current = false;
+
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+    }
+
+    longPressTimerRef.current = setTimeout(() => {
+      didLongPressRef.current = true;
+      try {
+        navigator.vibrate?.([40]);
+      } catch (_) {}
+      setIsSelectionMode(true);
+      setSelectedMessageIds((prev) => (prev.includes(msgId) ? prev : [...prev, msgId]));
+    }, 400); // 400ms padrão de toque prolongado no mobile
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!touchStartPosRef.current) return;
+    const touch = e.touches[0];
+    const dx = Math.abs(touch.clientX - touchStartPosRef.current.x);
+    const dy = Math.abs(touch.clientY - touchStartPosRef.current.y);
+    // Se o usuário estiver deslizando o dedo para rolar o chat, cancela o timer
+    if (dx > 8 || dy > 8) {
+      cancelLongPress();
+    }
+  };
+
+  const cancelLongPress = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    touchStartPosRef.current = null;
+  };
+
+  useEffect(() => {
+    return () => {
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+      }
+    };
+  }, []);
+
   // Monitora seleção de texto no textarea para exibir toolbar de formatação do WhatsApp
   const updateSelectionState = () => {
     if (textareaRef.current) {
@@ -441,9 +491,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
   // Selection mode helpers
   const handleToggleSelectMessage = (id: string) => {
-    setSelectedMessageIds((prev) =>
-      prev.includes(id) ? prev.filter((mId) => mId !== id) : [...prev, id]
-    );
+    setSelectedMessageIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((mId) => mId !== id) : [...prev, id];
+      if (next.length === 0) {
+        setIsSelectionMode(false);
+      }
+      return next;
+    });
   };
 
   const handleSelectAllMessages = () => {
@@ -661,7 +715,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     )}
                   </div>
                   <div className="text-[11px] text-[#53bdeb] hover:underline cursor-pointer flex items-center gap-1">
-                    <span>Clique para ver dados do CRM</span>
+                    <span>
+                      {isMobileMode ? (
+                        'Ver CRM'
+                      ) : (
+                        <>
+                          <span className="md:hidden">Ver CRM</span>
+                          <span className="hidden md:inline">Clique para ver dados do CRM</span>
+                        </>
+                      )}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -1022,13 +1085,55 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           return (
             <div
               key={msg.id}
+              onTouchStart={(e) => {
+                if (!isSelectionMode) {
+                  const touch = e.touches[0];
+                  startLongPress(msg.id, touch.clientX, touch.clientY);
+                }
+              }}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={(e) => {
+                cancelLongPress();
+                if (didLongPressRef.current) {
+                  e.preventDefault();
+                  setTimeout(() => {
+                    didLongPressRef.current = false;
+                  }, 50);
+                }
+              }}
+              onTouchCancel={cancelLongPress}
+              onMouseDown={(e) => {
+                if (e.button === 0 && !isSelectionMode) {
+                  startLongPress(msg.id, e.clientX, e.clientY);
+                }
+              }}
+              onMouseMove={(e) => {
+                if (touchStartPosRef.current) {
+                  const dx = Math.abs(e.clientX - touchStartPosRef.current.x);
+                  const dy = Math.abs(e.clientY - touchStartPosRef.current.y);
+                  if (dx > 8 || dy > 8) cancelLongPress();
+                }
+              }}
+              onMouseUp={cancelLongPress}
+              onMouseLeave={cancelLongPress}
+              onContextMenu={(e) => {
+                if (!isSelectionMode) {
+                  e.preventDefault();
+                  setIsSelectionMode(true);
+                  setSelectedMessageIds([msg.id]);
+                }
+              }}
               onClick={() => {
+                if (didLongPressRef.current) {
+                  didLongPressRef.current = false;
+                  return;
+                }
                 if (isSelectionMode) {
                   handleToggleSelectMessage(msg.id);
                 }
               }}
-              className={`flex items-center gap-2 transition-all ${
-                isSelectionMode ? 'cursor-pointer' : ''
+              className={`flex items-center gap-2 transition-all select-none ${
+                isSelectionMode ? 'cursor-pointer active:scale-[0.99]' : ''
               } ${isRightSide ? 'justify-end' : 'justify-start'}`}
             >
               {/* Checkbox no modo de seleção */}
@@ -1264,6 +1369,21 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                       >
                         <StickyNote className="w-4 h-4 text-[#8696a0]" />
                         <span>Adicionar texto às notas</span>
+                      </button>
+
+                      {/* Selecionar mensagem */}
+                      <button
+                        onClick={() => {
+                          setActiveMenuMessageId(null);
+                          setIsSelectionMode(true);
+                          setSelectedMessageIds((prev) => (prev.includes(msg.id) ? prev : [...prev, msg.id]));
+                        }}
+                        className={`w-full px-4 py-2 flex items-center gap-3 text-[13px] text-left transition-colors cursor-pointer ${
+                          darkMode ? 'hover:bg-[#182229]' : 'hover:bg-gray-100'
+                        }`}
+                      >
+                        <Check className="w-4 h-4 text-[#8696a0]" />
+                        <span>Selecionar mensagem</span>
                       </button>
 
                       <div className={`my-1 border-t ${darkMode ? 'border-[#374248]' : 'border-gray-100'}`} />
