@@ -43,6 +43,7 @@ import {
   Image as ImageIcon,
   Archive,
   ArchiveRestore,
+  FileText,
 } from 'lucide-react';
 import { Conversation, Message, ConversationStatus, Tag } from '../types';
 import { WhatsAppWallpaper } from './WhatsAppWallpaper';
@@ -93,6 +94,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 }) => {
   const [inputText, setInputText] = useState('');
   const [textSelection, setTextSelection] = useState<{ start: number; end: number } | null>(null);
+  const [showTranscriptionMap, setShowTranscriptionMap] = useState<Record<string, boolean>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1455,15 +1457,71 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
                   // 1. Áudio (PTT / Voice Note)
                   if (isAudio) {
+                    const isTranscribed = Boolean(showTranscriptionMap[msg.id]);
+                    // Puxar o que estiver na coluna "content" da tabela messages
+                    const contentText =
+                      rawContent && !rawContent.startsWith('http') && rawContent.trim() !== '[audio]' && rawContent.trim() !== 'audio'
+                        ? rawContent
+                        : msg.metadata?.transcription || msg.metadata?.text || rawContent || '';
+
                     return (
-                      <AudioPlayer
-                        src={effectiveMediaUrl}
-                        duration={msg.mediaDuration || '0:06'}
-                        senderType={msg.senderType}
-                        isMe={isRightSide}
-                        darkMode={darkMode}
-                        messageId={msg.id}
-                      />
+                      <div className="flex flex-col gap-1 w-full max-w-full">
+                        <AudioPlayer
+                          src={effectiveMediaUrl}
+                          duration={msg.mediaDuration || '0:06'}
+                          senderType={msg.senderType}
+                          isMe={isRightSide}
+                          darkMode={darkMode}
+                          messageId={msg.id}
+                        />
+
+                        {/* Opção para transcrever mensagem de áudio (fontes pequenas) */}
+                        <div className="pt-0.5 px-0.5">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShowTranscriptionMap((prev) => ({
+                                ...prev,
+                                [msg.id]: !prev[msg.id],
+                              }));
+                            }}
+                            className={`text-[10px] font-medium inline-flex items-center gap-1 transition-colors cursor-pointer select-none ${
+                              isRightSide
+                                ? 'text-white/85 hover:text-white underline underline-offset-2'
+                                : darkMode
+                                ? 'text-[#00a884] hover:text-[#25d366]'
+                                : 'text-[#008069] hover:text-[#00a884]'
+                            }`}
+                          >
+                            <FileText className="w-2.5 h-2.5" />
+                            <span>{isTranscribed ? 'Ocultar transcrição' : 'Transcrever áudio'}</span>
+                          </button>
+
+                          {isTranscribed && (
+                            <div
+                              className={`mt-1 p-2 rounded-lg text-[11px] leading-relaxed break-words whitespace-pre-wrap border animate-in fade-in duration-150 ${
+                                isRightSide
+                                  ? 'bg-black/15 border-white/10 text-white/95'
+                                  : darkMode
+                                  ? 'bg-[#111b21]/70 border-[#313d45]/50 text-[#d1d7db]'
+                                  : 'bg-white/80 border-[#e9edef] text-[#3b4a54]'
+                              }`}
+                            >
+                              <div className="text-[9px] uppercase tracking-wider font-semibold opacity-60 mb-0.5">
+                                Transcrição
+                              </div>
+                              {contentText.trim() ? (
+                                contentText
+                              ) : (
+                                <span className="italic opacity-60">
+                                  Nenhum texto de transcrição disponível na coluna content.
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     );
                   }
 

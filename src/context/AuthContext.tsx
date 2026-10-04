@@ -815,11 +815,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const hasDuplicate = existingAccounts.some((acc: any) => {
               const dbPhone = (acc.whatsapp_phone || '').replace(/\D/g, '');
               if (!dbPhone || dbPhone.length < 8) return false;
-              return (
-                dbPhone === normalizedPhone ||
-                (normalizedPhone.length >= 10 && dbPhone.endsWith(normalizedPhone.slice(-8))) ||
-                (dbPhone.length >= 10 && normalizedPhone.endsWith(dbPhone.slice(-8)))
-              );
+              if (dbPhone === normalizedPhone) return true;
+              // Para números do Brasil (DDI 55), compara DDD + número
+              if (dbPhone.length >= 10 && normalizedPhone.length >= 10) {
+                if (dbPhone.startsWith('55') && normalizedPhone.startsWith('55')) {
+                  return dbPhone.slice(-9) === normalizedPhone.slice(-9);
+                }
+              }
+              return false;
             });
 
             if (hasDuplicate) {

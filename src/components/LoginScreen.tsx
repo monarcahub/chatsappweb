@@ -53,8 +53,34 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
   const [duplicateWarning, setDuplicateWarning] = useState<{ message: string; detail: string } | null>(null);
   const [isAlreadyMemberModalOpen, setIsAlreadyMemberModalOpen] = useState(false);
 
-  // Máscara amigável de telefone brasileiro
-  const formatPhone = (val: string) => {
+  // Lista de países com DDI, bandeiras e placeholders
+  const COUNTRY_OPTIONS = [
+    { code: 'BR', name: 'Brasil', ddi: '+55', flag: '🇧🇷', placeholder: '(11) 99999-9999' },
+    { code: 'US', name: 'Estados Unidos', ddi: '+1', flag: '🇺🇸', placeholder: '555-883-6346' },
+    { code: 'PT', name: 'Portugal', ddi: '+351', flag: '🇵🇹', placeholder: '912 345 678' },
+    { code: 'ES', name: 'Espanha', ddi: '+34', flag: '🇪🇸', placeholder: '612 345 678' },
+    { code: 'AR', name: 'Argentina', ddi: '+54', flag: '🇦🇷', placeholder: '9 11 1234-5678' },
+    { code: 'MX', name: 'México', ddi: '+52', flag: '🇲🇽', placeholder: '55 1234 5678' },
+    { code: 'GB', name: 'Reino Unido', ddi: '+44', flag: '🇬🇧', placeholder: '7911 123456' },
+    { code: 'FR', name: 'França', ddi: '+33', flag: '🇫🇷', placeholder: '6 12 34 56 78' },
+    { code: 'DE', name: 'Alemanha', ddi: '+49', flag: '🇩🇪', placeholder: '151 23456789' },
+    { code: 'IT', name: 'Itália', ddi: '+39', flag: '🇮🇹', placeholder: '312 345 6789' },
+    { code: 'CL', name: 'Chile', ddi: '+56', flag: '🇨🇱', placeholder: '9 1234 5678' },
+    { code: 'UY', name: 'Uruguai', ddi: '+598', flag: '🇺🇾', placeholder: '91 234 567' },
+    { code: 'PY', name: 'Paraguai', ddi: '+595', flag: '🇵🇾', placeholder: '981 123456' },
+    { code: 'CO', name: 'Colômbia', ddi: '+57', flag: '🇨🇴', placeholder: '300 123 4567' },
+    { code: 'PE', name: 'Peru', ddi: '+51', flag: '🇵🇪', placeholder: '912 345 678' },
+    { code: 'OTHER', name: 'Outro País', ddi: '+', flag: '🌐', placeholder: 'Ex: +1 555-883-6346' },
+  ];
+
+  const [selectedCountry, setSelectedCountry] = useState(COUNTRY_OPTIONS[0]);
+
+  // Formatação flexível para telefone local ou internacional
+  const formatPhone = (val: string, countryCode: string = 'BR') => {
+    if (countryCode !== 'BR') {
+      // Para números de outros países, permite caracteres internacionais de forma limpa
+      return val.replace(/[^\d\s\-()+]/g, '');
+    }
     const digits = val.replace(/\D/g, '').slice(0, 11);
     if (digits.length <= 2) return digits.length ? `(${digits}` : '';
     if (digits.length <= 6) return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
@@ -102,8 +128,8 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
       return;
     }
 
-    if (digits.length < 10) {
-      setRegisterError('Por favor informe um WhatsApp/telefone comercial válido com DDD.');
+    if (digits.length < 6) {
+      setRegisterError('Por favor informe um WhatsApp/telefone comercial válido.');
       return;
     }
 
@@ -117,6 +143,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
       return;
     }
 
+    // Monta o telefone internacional completo com DDI
+    let fullPhone = cleanPhone;
+    if (!fullPhone.startsWith('+')) {
+      const ddi = selectedCountry.ddi.trim();
+      fullPhone = ddi === '+' ? `+${fullPhone}` : `${ddi} ${fullPhone}`;
+    }
+
     setIsLoading(true);
     try {
       const res = await registerAccount(
@@ -125,7 +158,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
         cleanAdmin,
         cleanMail,
         newPassword,
-        cleanPhone
+        fullPhone
       );
 
       if (!res.success) {
@@ -482,26 +515,54 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                 </div>
               </div>
 
-              {/* WhatsApp Comercial da Empresa */}
+              {/* WhatsApp Comercial da Empresa com Seletor de País */}
               <div>
                 <label className="text-xs font-medium text-[#8696a0] mb-1 block">
                   WhatsApp Comercial da Empresa
                 </label>
                 <div
-                  className={`flex items-center gap-2.5 px-3.5 py-2 rounded-xl border transition-colors ${
+                  className={`flex items-center gap-2 px-3 py-2 rounded-xl border transition-colors ${
                     darkMode
                       ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
                       : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
                   }`}
                 >
-                  <Phone className="w-4 h-4 text-[#8696a0] shrink-0" />
+                  {/* Seletor de País com Bandeira e DDI */}
+                  <div className="flex items-center gap-1 shrink-0 pr-2 border-r border-[#313d45]/40">
+                    <span className="text-sm select-none leading-none">{selectedCountry.flag}</span>
+                    <select
+                      value={selectedCountry.code}
+                      onChange={(e) => {
+                        const found = COUNTRY_OPTIONS.find((c) => c.code === e.target.value);
+                        if (found) {
+                          setSelectedCountry(found);
+                          setNewWhatsappPhone('');
+                        }
+                      }}
+                      className={`bg-transparent text-xs font-semibold focus:outline-none cursor-pointer pr-1 py-0.5 ${
+                        darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'
+                      }`}
+                      aria-label="Código DDI do País"
+                    >
+                      {COUNTRY_OPTIONS.map((c) => (
+                        <option
+                          key={c.code}
+                          value={c.code}
+                          className={darkMode ? 'bg-[#202c33] text-[#e9edef]' : 'bg-white text-[#111b21]'}
+                        >
+                          {c.flag} {c.ddi} ({c.name})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
                   <input
                     type="tel"
                     required
-                    placeholder="(11) 99999-9999"
+                    placeholder={selectedCountry.placeholder}
                     value={newWhatsappPhone}
                     onChange={(e) => {
-                      setNewWhatsappPhone(formatPhone(e.target.value));
+                      setNewWhatsappPhone(formatPhone(e.target.value, selectedCountry.code));
                       if (registerError) setRegisterError(null);
                     }}
                     className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
@@ -509,6 +570,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                     }`}
                   />
                 </div>
+                <p className="text-[10px] text-[#8696a0] mt-1 pl-1">
+                  Exemplo ({selectedCountry.name}): <span className="font-mono">{selectedCountry.ddi} {selectedCountry.placeholder}</span>
+                </p>
               </div>
 
               <div>
