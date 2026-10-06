@@ -54,6 +54,7 @@ import { ChatMenuDropdown } from './ChatMenuDropdown';
 import { AudioPlayer } from './AudioPlayer';
 import { WhatsAppFormattedText, applyWhatsAppFormatting } from '../utils/whatsappFormatter';
 import { WhatsAppFormatToolbar } from './WhatsAppFormatToolbar';
+import { TelegramIcon } from './TelegramIcon';
 
 interface ChatAreaProps {
   conversation: Conversation | null;
@@ -797,6 +798,15 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   const getChannelBadge = () => {
     const ringClass = darkMode ? 'ring-[#202c33]' : 'ring-[#f0f2f5]';
     switch (contact.channel) {
+      case 'telegram':
+        return (
+          <span
+            className={`w-4 h-4 rounded-full bg-[#0088cc] text-white flex items-center justify-center shadow-xs ring-2 ${ringClass} shrink-0`}
+            title="Telegram"
+          >
+            <TelegramIcon className="w-2.5 h-2.5" />
+          </span>
+        );
       case 'instagram':
         return (
           <span

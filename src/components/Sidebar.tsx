@@ -31,6 +31,7 @@ import { Conversation, ChannelType, ConversationStatus, Account } from '../types
 import { formatSaoPauloDate, formatAudioDuration } from '../utils/dateFormat';
 import { TopMoreMenuDropdown } from './TopMoreMenuDropdown';
 import { ConversationContextMenu } from './ConversationContextMenu';
+import { TelegramIcon } from './TelegramIcon';
 import {
   requestBrowserNotificationPermission,
   playIncomingNotificationSound,
@@ -207,22 +208,40 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   const renderChannelBadge = (channel: ChannelType) => {
     switch (channel) {
+      case 'telegram':
+        return (
+          <div
+            className="absolute -bottom-0.5 -right-0.5 p-0.5 rounded-full bg-[#0088cc] text-white shadow-sm ring-1 ring-[#111b21] flex items-center justify-center"
+            title="Telegram"
+          >
+            <TelegramIcon className="w-2.5 h-2.5" />
+          </div>
+        );
       case 'instagram':
         return (
-          <div className="absolute -bottom-0.5 -right-0.5 p-0.5 rounded-full bg-gradient-to-tr from-yellow-500 via-red-500 to-purple-600 text-white shadow-sm ring-1 ring-[#111b21]">
+          <div
+            className="absolute -bottom-0.5 -right-0.5 p-0.5 rounded-full bg-gradient-to-tr from-yellow-500 via-red-500 to-purple-600 text-white shadow-sm ring-1 ring-[#111b21] flex items-center justify-center"
+            title="Instagram Direct"
+          >
             <Instagram className="w-2.5 h-2.5" />
           </div>
         );
       case 'webchat':
         return (
-          <div className="absolute -bottom-0.5 -right-0.5 p-0.5 rounded-full bg-[#00a884] text-white shadow-sm ring-1 ring-[#111b21]">
+          <div
+            className="absolute -bottom-0.5 -right-0.5 p-0.5 rounded-full bg-[#00a884] text-white shadow-sm ring-1 ring-[#111b21] flex items-center justify-center"
+            title="Chat do Site"
+          >
             <Globe className="w-2.5 h-2.5" />
           </div>
         );
       case 'whatsapp':
       default:
         return (
-          <div className="absolute -bottom-0.5 -right-0.5 p-0.5 rounded-full bg-[#25d366] text-white shadow-sm ring-1 ring-[#111b21]">
+          <div
+            className="absolute -bottom-0.5 -right-0.5 p-0.5 rounded-full bg-[#25d366] text-white shadow-sm ring-1 ring-[#111b21] flex items-center justify-center"
+            title="WhatsApp"
+          >
             <MessageSquare className="w-2.5 h-2.5" />
           </div>
         );
@@ -549,6 +568,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           <Instagram className="w-3 h-3" />
           <span>Instagram</span>
+        </button>
+
+        <button
+          id="channel-telegram"
+          onClick={() => onChannelChange('telegram')}
+          className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap ${
+            selectedChannel === 'telegram'
+              ? 'bg-[#0088cc] text-white font-semibold'
+              : darkMode
+              ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
+              : 'bg-[#e9edef] text-[#54656f]'
+          }`}
+        >
+          <TelegramIcon className="w-3 h-3" />
+          <span>Telegram</span>
         </button>
 
         <button

@@ -24,6 +24,7 @@ import {
   Pencil,
 } from 'lucide-react';
 import { Contact, AIStatus, Tag, CRMStage, ConversationStatus } from '../types';
+import { TelegramIcon } from './TelegramIcon';
 
 interface RightPanelProps {
   contact: Contact;
@@ -110,6 +111,8 @@ export const RightPanel: React.FC<RightPanelProps> = ({
 
   const getChannelIcon = () => {
     switch (contact.channel) {
+      case 'telegram':
+        return <TelegramIcon className="w-4 h-4 text-[#0088cc]" />;
       case 'instagram':
         return <Instagram className="w-4 h-4 text-pink-500" />;
       case 'webchat':
@@ -220,7 +223,13 @@ export const RightPanel: React.FC<RightPanelProps> = ({
             <div className="flex items-center gap-2 text-gray-400">
               <span className="shrink-0">{getChannelIcon()}</span>
               <span className="truncate font-medium text-[#e9edef]">
-                {contact.channel === 'whatsapp' ? 'WhatsApp Oficial' : contact.channel === 'instagram' ? 'Instagram Direct' : 'Chat do Site'}
+                {contact.channel === 'telegram'
+                  ? 'Telegram'
+                  : contact.channel === 'whatsapp'
+                  ? 'WhatsApp Oficial'
+                  : contact.channel === 'instagram'
+                  ? 'Instagram Direct'
+                  : 'Chat do Site'}
               </span>
             </div>
             {contact.phone && (

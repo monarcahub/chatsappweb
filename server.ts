@@ -284,17 +284,23 @@ app.post('/api/auth/login', async (req, res) => {
 
     const cleanEmail = email.trim().toLowerCase();
 
-    // 1. Tentar encontrar na tabela account_users
-    const { data: userData, error: userErr } = await supabaseAdmin
+    // 1. Encontrar todas as contas vinculadas a este e-mail na tabela account_users
+    const { data: allUserAccounts } = await supabaseAdmin
       .from('account_users')
       .select('*, accounts(*)')
-      .eq('email', cleanEmail)
-      .limit(1)
-      .maybeSingle();
+      .eq('email', cleanEmail);
 
-    if (!userData || !userData.accounts) {
+    if (!allUserAccounts || allUserAccounts.length === 0) {
       return res.status(404).json({ error: 'Nenhum cadastro encontrado com este e-mail. Cadastre sua empresa na aba ao lado.' });
     }
+
+    const validAccounts = allUserAccounts.filter((u: any) => u.accounts);
+    if (validAccounts.length === 0) {
+      return res.status(404).json({ error: 'Nenhuma empresa ativa associada a este usuário.' });
+    }
+
+    // Prefere conta com canais ativos, por exemplo GridPlay F1 ou a primeira vinculada
+    const userData = validAccounts.find((u: any) => u.accounts?.name?.includes('GridPlay')) || validAccounts[0];
 
     // 2. Validação da senha no Supabase Auth
     const anonClient = createClient(cleanSupabaseUrl, process.env.VITE_SUPABASE_ANON_KEY || serviceRoleKey);
@@ -329,6 +335,28 @@ app.post('/api/auth/login', async (req, res) => {
       }
     }
 
+    const availableAccounts = validAccounts.map((u: any) => ({
+      id: u.accounts.id,
+      name: u.accounts.name,
+      slug: u.accounts.slug,
+      segment: u.accounts.segment,
+      whatsappPhone: u.accounts.whatsapp_phone || '',
+      plan: u.accounts.plan,
+      createdAt: u.accounts.created_at,
+    }));
+
+    if (availableAccounts.length > 1) {
+      availableAccounts.push({
+        id: 'all',
+        name: 'Todas as Minhas Empresas (Consolidado)',
+        slug: 'todas-minhas-empresas',
+        segment: 'Visão Geral Multi-Tenant',
+        whatsappPhone: '',
+        plan: 'Consolidado',
+        createdAt: new Date().toISOString(),
+      });
+    }
+
     const acc = userData.accounts;
     return res.json({
       success: true,
@@ -341,6 +369,7 @@ app.post('/api/auth/login', async (req, res) => {
         plan: acc.plan,
         createdAt: acc.created_at,
       },
+      availableAccounts,
       user: {
         id: userData.id,
         accountId: acc.id,

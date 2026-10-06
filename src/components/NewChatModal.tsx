@@ -10,6 +10,7 @@ import {
   Check
 } from 'lucide-react';
 import { ChannelType } from '../types';
+import { TelegramIcon } from './TelegramIcon';
 
 interface NewChatModalProps {
   isOpen: boolean;
@@ -125,7 +126,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
                     : 'bg-gray-100 border-gray-200 text-[#54656f]'
                 }`}
               >
-                <Send className="w-3.5 h-3.5" />
+                <TelegramIcon className="w-3.5 h-3.5" />
                 <span>Telegram</span>
               </button>
 
