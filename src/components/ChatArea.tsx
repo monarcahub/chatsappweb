@@ -810,7 +810,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       case 'instagram':
         return (
           <span
-            className={`w-4 h-4 rounded-full bg-gradient-to-tr from-amber-500 via-rose-500 to-purple-600 text-white flex items-center justify-center shadow-xs ring-2 ${ringClass} shrink-0`}
+            className={`w-4 h-4 rounded-full bg-gradient-to-tr from-[#f09433] via-[#e6683c] to-[#bc1888] text-white flex items-center justify-center shadow-xs ring-2 ${ringClass} shrink-0`}
             title="Instagram Direct"
           >
             <Instagram className="w-2.5 h-2.5" />
@@ -819,7 +819,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       case 'webchat':
         return (
           <span
-            className={`w-4 h-4 rounded-full bg-blue-600 text-white flex items-center justify-center shadow-xs ring-2 ${ringClass} shrink-0`}
+            className={`w-4 h-4 rounded-full bg-[#00a884] text-white flex items-center justify-center shadow-xs ring-2 ${ringClass} shrink-0`}
             title="Chat do Site"
           >
             <Globe className="w-2.5 h-2.5" />
@@ -832,7 +832,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             className={`w-4 h-4 rounded-full bg-[#25d366] text-white flex items-center justify-center shadow-xs ring-2 ${ringClass} shrink-0`}
             title="WhatsApp Oficial"
           >
-            <MessageSquare className="w-2.5 h-2.5" />
+            <MessageSquare className="w-2.5 h-2.5 fill-current" />
           </span>
         );
     }

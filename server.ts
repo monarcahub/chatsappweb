@@ -390,11 +390,30 @@ app.get('/api/channels', async (req, res) => {
   }
 
   try {
-    const accountId = req.query.account_id as string;
+    const rawAccountId = req.query.account_id as string;
+    const accountIdsParam = req.query.account_ids as string;
+
+    // Se account_id estiver vazio, indefinido ou nulo, NUNCA expõe canais de outras empresas!
+    if (!rawAccountId || rawAccountId === '' || rawAccountId === 'undefined' || rawAccountId === 'null') {
+      return res.json({ channels: [] });
+    }
+
     let query = supabaseAdmin.from('channels').select('*').order('created_at', { ascending: false });
 
-    if (accountId) {
-      query = query.eq('account_id', accountId);
+    if (rawAccountId === 'all') {
+      if (accountIdsParam) {
+        const ids = accountIdsParam.split(',').map((s) => s.trim()).filter(Boolean);
+        if (ids.length > 0) {
+          query = query.in('account_id', ids);
+        } else {
+          return res.json({ channels: [] });
+        }
+      } else {
+        // Visão consolidada sem IDs explícitos de contas não deve vazar canais de outros tenants
+        return res.json({ channels: [] });
+      }
+    } else {
+      query = query.eq('account_id', rawAccountId);
     }
 
     const { data, error } = await query;
@@ -405,6 +424,36 @@ app.get('/api/channels', async (req, res) => {
     res.json({ channels: data || [] });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Erro ao buscar canais' });
+  }
+});
+
+// Excluir / desconectar canal da empresa
+app.delete('/api/channels/:id', async (req, res) => {
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'Supabase admin não configurado' });
+  }
+
+  try {
+    const channelId = req.params.id;
+    const accountId = req.query.account_id as string;
+
+    if (!channelId) {
+      return res.status(400).json({ error: 'ID do canal é obrigatório' });
+    }
+
+    let query = supabaseAdmin.from('channels').delete().eq('id', channelId);
+    if (accountId && accountId !== 'all') {
+      query = query.eq('account_id', accountId);
+    }
+
+    const { error } = await query;
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    res.json({ success: true, message: 'Canal desconectado com sucesso' });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Erro ao excluir canal' });
   }
 });
 

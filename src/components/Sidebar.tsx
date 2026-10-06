@@ -207,11 +207,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   });
 
   const renderChannelBadge = (channel: ChannelType) => {
+    const ringClass = darkMode ? 'ring-[#111b21]' : 'ring-white';
     switch (channel) {
       case 'telegram':
         return (
           <div
-            className="absolute -bottom-0.5 -right-0.5 p-0.5 rounded-full bg-[#0088cc] text-white shadow-sm ring-1 ring-[#111b21] flex items-center justify-center"
+            className={`absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-[#0088cc] text-white shadow-xs ring-2 ${ringClass} flex items-center justify-center`}
             title="Telegram"
           >
             <TelegramIcon className="w-2.5 h-2.5" />
@@ -220,7 +221,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       case 'instagram':
         return (
           <div
-            className="absolute -bottom-0.5 -right-0.5 p-0.5 rounded-full bg-gradient-to-tr from-yellow-500 via-red-500 to-purple-600 text-white shadow-sm ring-1 ring-[#111b21] flex items-center justify-center"
+            className={`absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-gradient-to-tr from-[#f09433] via-[#e6683c] to-[#bc1888] text-white shadow-xs ring-2 ${ringClass} flex items-center justify-center`}
             title="Instagram Direct"
           >
             <Instagram className="w-2.5 h-2.5" />
@@ -229,7 +230,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       case 'webchat':
         return (
           <div
-            className="absolute -bottom-0.5 -right-0.5 p-0.5 rounded-full bg-[#00a884] text-white shadow-sm ring-1 ring-[#111b21] flex items-center justify-center"
+            className={`absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-[#00a884] text-white shadow-xs ring-2 ${ringClass} flex items-center justify-center`}
             title="Chat do Site"
           >
             <Globe className="w-2.5 h-2.5" />
@@ -239,10 +240,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
       default:
         return (
           <div
-            className="absolute -bottom-0.5 -right-0.5 p-0.5 rounded-full bg-[#25d366] text-white shadow-sm ring-1 ring-[#111b21] flex items-center justify-center"
+            className={`absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-[#25d366] text-white shadow-xs ring-2 ${ringClass} flex items-center justify-center`}
             title="WhatsApp"
           >
-            <MessageSquare className="w-2.5 h-2.5" />
+            <MessageSquare className="w-2.5 h-2.5 fill-current" />
           </div>
         );
     }

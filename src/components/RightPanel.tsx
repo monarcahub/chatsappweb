@@ -165,12 +165,30 @@ export const RightPanel: React.FC<RightPanelProps> = ({
               alt={contact.name}
               className="w-20 h-20 rounded-full object-cover ring-4 ring-[#00a884]/20"
             />
-            <span
-              className={`absolute bottom-0 right-1 w-4 h-4 rounded-full border-2 ${
-                contact.coexistenceEnabled ? 'bg-[#25d366]' : 'bg-gray-400'
-              } ${darkMode ? 'border-[#202c33]' : 'border-white'}`}
-              title={contact.coexistenceEnabled ? 'Coexistência Celular Ativa' : 'Apenas Cloud API'}
-            />
+            <div
+              className={`absolute bottom-0 right-0 w-6 h-6 rounded-full border-2 ${
+                darkMode ? 'border-[#202c33]' : 'border-white'
+              } flex items-center justify-center shadow-md ${
+                contact.channel === 'telegram'
+                  ? 'bg-[#0088cc] text-white'
+                  : contact.channel === 'instagram'
+                  ? 'bg-gradient-to-tr from-[#f09433] via-[#e6683c] to-[#bc1888] text-white'
+                  : contact.channel === 'webchat'
+                  ? 'bg-[#00a884] text-white'
+                  : 'bg-[#25d366] text-white'
+              }`}
+              title={`Canal: ${contact.channel.toUpperCase()}`}
+            >
+              {contact.channel === 'telegram' ? (
+                <TelegramIcon className="w-3.5 h-3.5" />
+              ) : contact.channel === 'instagram' ? (
+                <Instagram className="w-3.5 h-3.5" />
+              ) : contact.channel === 'webchat' ? (
+                <Globe className="w-3.5 h-3.5" />
+              ) : (
+                <MessageSquare className="w-3.5 h-3.5 fill-current" />
+              )}
+            </div>
           </div>
 
           {/* Nome com suporte a edição imediata */}

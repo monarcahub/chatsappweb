@@ -19,6 +19,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { useSupabaseChat } from './hooks/useSupabaseChat';
 import { ChannelType, Tag } from './types';
 import { INITIAL_TAGS } from './data/mockData';
+import { supabase, isSupabaseConfigured, ensureSupabaseConfig } from './lib/supabase';
 
 function AppContent() {
   const {
@@ -124,12 +125,50 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
 
   // Consulta canais reais vinculados à empresa no Supabase
   const refreshChannelsCount = async () => {
-    if (!currentAccount?.id) return;
+    if (!currentAccount?.id) {
+      setChannelsCount(0);
+      return;
+    }
+
     try {
-      const res = await fetch(`/api/channels?account_id=${currentAccount.id}`);
+      await ensureSupabaseConfig();
+
+      const userAccountIds = (availableAccounts || [])
+        .map((a: any) => a.id)
+        .filter((id: string) => Boolean(id) && id !== 'all');
+
+      // 1. Consulta direta ao Supabase
+      if (isSupabaseConfigured) {
+        let query = supabase.from('channels').select('id');
+        if (currentAccount.id === 'all') {
+          if (userAccountIds.length > 0) {
+            query = query.in('account_id', userAccountIds);
+          } else {
+            setChannelsCount(0);
+            return;
+          }
+        } else {
+          query = query.eq('account_id', currentAccount.id);
+        }
+
+        const { data, error } = await query;
+        if (!error && Array.isArray(data)) {
+          setChannelsCount(data.length);
+          return;
+        }
+      }
+
+      // 2. Fallback para rota backend
+      const queryParams = new URLSearchParams();
+      queryParams.set('account_id', currentAccount.id);
+      if (userAccountIds.length > 0) {
+        queryParams.set('account_ids', userAccountIds.join(','));
+      }
+
+      const res = await fetch(`/api/channels?${queryParams.toString()}`);
       if (res.ok) {
         const data = await res.json();
-        setChannelsCount(data.channels ? data.channels.length : 0);
+        setChannelsCount(Array.isArray(data.channels) ? data.channels.length : 0);
       }
     } catch (e) {
       console.warn('Erro ao consultar canais:', e);

@@ -10,6 +10,7 @@ import {
   MessageContentType,
   AuthUser,
   Account,
+  ChannelType,
 } from '../types';
 import {
   INITIAL_CONVERSATIONS,
@@ -278,6 +279,8 @@ export function useSupabaseChat(
         .select(`
           id,
           account_id,
+          channel_id,
+          contact_id,
           status,
           crm_stage,
           notes,
@@ -351,13 +354,58 @@ export function useSupabaseChat(
         console.warn('Não foi possível pré-carregar últimas mensagens:', err);
       }
 
+      // 2. Mapa de canais para resolver tipo mesmo que o join do PostgREST venha vazio
+      const channelsMap = new Map<string, any>();
+      try {
+        const { data: allChannels } = await supabase
+          .from('channels')
+          .select('id, name, type');
+        if (allChannels) {
+          for (const ch of allChannels) {
+            channelsMap.set(ch.id, ch);
+          }
+        }
+      } catch (err) {
+        console.warn('Não foi possível pré-carregar canais para mapeamento:', err);
+      }
+
       if (convsData) {
         const storedArchivedIds = getStoredArchivedIds();
         if (convsData.length > 0) {
           const formattedConvs: Conversation[] = convsData.map((row: any) => {
             const contact = row.contacts || {};
-            const channel = row.channels || {};
-            const channelType = channel.type || 'whatsapp';
+            const chFromJoin = row.channels || {};
+            const chFromMap = (row.channel_id && channelsMap.get(row.channel_id)) || {};
+            const channel = (chFromJoin && chFromJoin.type) ? chFromJoin : chFromMap;
+
+            const rawType = String(channel?.type || '').toLowerCase().trim();
+            const rawName = String(channel?.name || '').toLowerCase().trim();
+
+            let channelType: ChannelType = 'whatsapp';
+            if (rawType.includes('telegram') || rawName.includes('telegram')) {
+              channelType = 'telegram';
+            } else if (
+              rawType.includes('instagram') ||
+              rawName.includes('instagram') ||
+              contact.instagram_username ||
+              contact.instagramUsername
+            ) {
+              channelType = 'instagram';
+            } else if (
+              rawType.includes('webchat') ||
+              rawType.includes('site') ||
+              rawType.includes('web') ||
+              rawName.includes('site') ||
+              rawName.includes('webchat')
+            ) {
+              channelType = 'webchat';
+            } else if (
+              rawType.includes('whatsapp') ||
+              rawName.includes('whats') ||
+              rawName.includes('waba')
+            ) {
+              channelType = 'whatsapp';
+            }
 
             const latestMsg = latestMsgsMap.get(row.id);
             const rawSender = latestMsg ? String(latestMsg.sender_type || '').toLowerCase().trim() : '';
@@ -1365,7 +1413,7 @@ export function useSupabaseChat(
   // Simular recebimento de Webhook em tempo real
   const simulateWebhookIncoming = useCallback(
     (params: {
-      channel: 'whatsapp' | 'instagram' | 'webchat';
+      channel: ChannelType;
       senderName: string;
       senderPhoneOrUser: string;
       messageText: string;

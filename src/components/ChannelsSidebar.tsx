@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   ArrowLeft,
   MessageSquare,
@@ -19,10 +19,13 @@ import {
   ChevronUp,
   Send,
   Sparkles,
+  Trash2,
 } from 'lucide-react';
 import { ChannelType, Account } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useMetaWhatsAppSignup } from '../hooks/useMetaWhatsAppSignup';
+import { TelegramIcon } from './TelegramIcon';
+import { supabase, isSupabaseConfigured, ensureSupabaseConfig } from '../lib/supabase';
 
 interface ChannelsSidebarProps {
   darkMode: boolean;
@@ -51,9 +54,16 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
   currentChannelFilter,
   currentAccount,
 }) => {
-  const { user } = useAuth();
+  const { user, availableAccounts } = useAuth();
   const [channels, setChannels] = useState<ConnectedChannelItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Lista de IDs autorizados da empresa do usuário logado
+  const allowedAccountIds = useMemo(() => {
+    return (availableAccounts || [])
+      .map((a) => a.id)
+      .filter((id) => Boolean(id) && id !== 'all');
+  }, [availableAccounts]);
   const [isConnectModalOpen, setIsConnectModalOpen] = useState(false);
   const [selectedPlatform, setSelectedPlatform] = useState<ChannelType | null>(null);
   const [whatsAppApiChoice, setWhatsAppApiChoice] = useState<'meta_official' | 'monarcahub_standard' | null>(null);
@@ -141,48 +151,95 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
     },
   });
 
+  const mapChannelRow = (ch: any): ConnectedChannelItem => {
+    const apiType = ch.config?.api_type || 'meta_official';
+    const identifier =
+      ch.type === 'whatsapp'
+        ? ch.config?.waba_phone || ch.config?.phone || currentAccount?.whatsappPhone || 'Ativo'
+        : ch.type === 'instagram'
+        ? ch.config?.username || `@${ch.name.toLowerCase().replace(/\s+/g, '')}`
+        : ch.type === 'telegram'
+        ? ch.config?.bot_username || `@${ch.name.toLowerCase().replace(/\s+/g, '')}bot`
+        : ch.config?.domain || 'Widget Ativo';
+
+    const provider =
+      ch.type === 'whatsapp'
+        ? (apiType === 'monarcahub_standard' ? 'Api Padrão MonarcaHub' : 'Api Oficial Meta Business')
+        : ch.type === 'instagram'
+        ? 'Instagram Direct'
+        : ch.type === 'telegram'
+        ? 'Telegram Bot'
+        : 'Site Chat (Webchat)';
+
+    return {
+      id: ch.id,
+      name: ch.name || 'Canal de Atendimento',
+      type: ch.type || 'whatsapp',
+      identifier,
+      provider,
+      apiType: ch.type === 'whatsapp' ? apiType : undefined,
+      status: ch.is_active ? 'online' : 'offline',
+      latency: '32ms',
+      ai_enabled: ch.config?.ai_enabled !== false,
+    };
+  };
+
   const fetchChannels = async () => {
-    if (!currentAccount) return;
+    if (!currentAccount || !currentAccount.id) {
+      setChannels([]);
+      setIsLoading(false);
+      return;
+    }
+
     setIsLoading(true);
     try {
-      const res = await fetch(`/api/channels?account_id=${currentAccount.id}`);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.channels) {
-          const mapped: ConnectedChannelItem[] = data.channels.map((ch: any) => {
-            const apiType = ch.config?.api_type || 'meta_official';
-            const identifier =
-              ch.type === 'whatsapp'
-                ? ch.config?.waba_phone || ch.config?.phone || currentAccount.whatsappPhone || 'Ativo'
-                : ch.type === 'instagram'
-                ? ch.config?.username || `@${ch.name.toLowerCase().replace(/\s+/g, '')}`
-                : ch.type === 'telegram'
-                ? ch.config?.bot_username || `@${ch.name.toLowerCase().replace(/\s+/g, '')}bot`
-                : ch.config?.domain || 'Widget Ativo';
+      await ensureSupabaseConfig();
 
-            const provider =
-              ch.type === 'whatsapp'
-                ? (apiType === 'monarcahub_standard' ? 'Api Padrão MonarcaHub' : 'Api Oficial Meta Business')
-                : ch.type === 'instagram'
-                ? 'Instagram Direct'
-                : ch.type === 'telegram'
-                ? 'Telegram Bot'
-                : 'Site Chat (Webchat)';
+      let channelsData: any[] | null = null;
 
-            return {
-              id: ch.id,
-              name: ch.name || 'Canal de Atendimento',
-              type: ch.type || 'whatsapp',
-              identifier,
-              provider,
-              apiType: ch.type === 'whatsapp' ? apiType : undefined,
-              status: ch.is_active ? 'online' : 'offline',
-              latency: '32ms',
-              ai_enabled: ch.config?.ai_enabled !== false,
-            };
-          });
-          setChannels(mapped);
+      // 1. Consulta direta ao Supabase com anon key (funciona no Vercel/Produção e Preview)
+      if (isSupabaseConfigured) {
+        let query = supabase
+          .from('channels')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (currentAccount.id === 'all') {
+          if (allowedAccountIds.length > 0) {
+            query = query.in('account_id', allowedAccountIds);
+          } else {
+            setChannels([]);
+            setIsLoading(false);
+            return;
+          }
+        } else {
+          query = query.eq('account_id', currentAccount.id);
         }
+
+        const { data, error } = await query;
+        if (!error && Array.isArray(data)) {
+          channelsData = data;
+        }
+      }
+
+      // 2. Fallback para rota /api/channels
+      if (!channelsData) {
+        const queryParams = new URLSearchParams();
+        queryParams.set('account_id', currentAccount.id);
+        if (allowedAccountIds.length > 0) {
+          queryParams.set('account_ids', allowedAccountIds.join(','));
+        }
+        const res = await fetch(`/api/channels?${queryParams.toString()}`);
+        if (res.ok) {
+          const json = await res.json();
+          if (json.channels && Array.isArray(json.channels)) {
+            channelsData = json.channels;
+          }
+        }
+      }
+
+      if (channelsData) {
+        setChannels(channelsData.map(mapChannelRow));
       }
     } catch (err) {
       console.warn('Erro ao carregar canais:', err);
@@ -194,32 +251,97 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
   const handleToggleChannelAI = async (channelId: string, currentStatus: boolean) => {
     const newStatus = !currentStatus;
     try {
-      const res = await fetch('/api/channels/toggle-ai', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          channel_id: channelId,
-          ai_enabled: newStatus,
-          account_id: currentAccount?.id,
-        }),
-      });
-      if (res.ok) {
-        setChannels((prev) =>
-          prev.map((c) => (c.id === channelId ? { ...c, ai_enabled: newStatus } : c))
-        );
+      await ensureSupabaseConfig();
+      let updated = false;
+
+      if (isSupabaseConfigured) {
+        const currentChannel = channels.find((c) => c.id === channelId);
+        const { error } = await supabase
+          .from('channels')
+          .update({
+            config: {
+              ...(currentChannel ? { ai_enabled: newStatus } : {}),
+              ai_enabled: newStatus,
+            },
+          })
+          .eq('id', channelId);
+        if (!error) updated = true;
       }
+
+      if (!updated) {
+        await fetch('/api/channels/toggle-ai', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            channel_id: channelId,
+            ai_enabled: newStatus,
+            account_id: currentAccount?.id,
+          }),
+        });
+      }
+
+      setChannels((prev) =>
+        prev.map((c) => (c.id === channelId ? { ...c, ai_enabled: newStatus } : c))
+      );
     } catch (err) {
       console.warn('Erro ao alternar IA do canal:', err);
     }
   };
 
+  const handleDeleteChannel = async (channelId: string, channelName: string) => {
+    if (!window.confirm(`Deseja realmente desconectar o canal "${channelName}"?`)) {
+      return;
+    }
+
+    try {
+      await ensureSupabaseConfig();
+      let deleted = false;
+
+      if (isSupabaseConfigured) {
+        const { error } = await supabase
+          .from('channels')
+          .delete()
+          .eq('id', channelId);
+        if (!error) deleted = true;
+      }
+
+      if (!deleted) {
+        await fetch(`/api/channels/${channelId}?account_id=${currentAccount?.id}`, {
+          method: 'DELETE',
+        });
+      }
+
+      setChannels((prev) => prev.filter((c) => c.id !== channelId));
+    } catch (err) {
+      console.warn('Erro ao excluir canal:', err);
+    }
+  };
+
+  // Carrega canais e escuta alterações em tempo real no Supabase
   useEffect(() => {
     fetchChannels();
-  }, [currentAccount?.id]);
+
+    if (!isSupabaseConfigured || !currentAccount?.id) return;
+
+    const channelSubscription = supabase
+      .channel(`channels-realtime-${currentAccount.id}-${Date.now()}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'channels' },
+        () => {
+          fetchChannels();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channelSubscription);
+    };
+  }, [currentAccount?.id, allowedAccountIds]);
 
   const handleCreateChannel = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentAccount || !newChannelName.trim()) return;
+    if (!currentAccount || !currentAccount.id || !newChannelName.trim()) return;
 
     let targetType: ChannelType = selectedPlatform || 'whatsapp';
     let channelConfig: Record<string, any> = {};
@@ -277,20 +399,47 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
 
     setIsSaving(true);
     try {
-      const res = await fetch('/api/channels', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          account_id: currentAccount.id,
-          name: newChannelName.trim(),
-          type: targetType,
-          config: channelConfig,
-        }),
-      });
+      await ensureSupabaseConfig();
+      let created = false;
 
-      if (res.ok) {
-        resetConnectModal();
-        await fetchChannels();
+      // 1. Tenta salvar diretamente no Supabase
+      if (isSupabaseConfigured) {
+        const { data, error } = await supabase
+          .from('channels')
+          .insert({
+            account_id: currentAccount.id,
+            name: newChannelName.trim(),
+            type: targetType,
+            is_active: true,
+            config: channelConfig,
+          })
+          .select()
+          .single();
+
+        if (!error && data) {
+          created = true;
+          resetConnectModal();
+          await fetchChannels();
+        }
+      }
+
+      // 2. Fallback para rota /api/channels
+      if (!created) {
+        const res = await fetch('/api/channels', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            account_id: currentAccount.id,
+            name: newChannelName.trim(),
+            type: targetType,
+            config: channelConfig,
+          }),
+        });
+
+        if (res.ok) {
+          resetConnectModal();
+          await fetchChannels();
+        }
       }
     } catch (err) {
       console.warn('Erro ao criar canal:', err);
@@ -309,14 +458,14 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
         );
       case 'instagram':
         return (
-          <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-amber-500 via-rose-500 to-purple-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+          <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-[#f09433] via-[#e6683c] to-[#bc1888] text-white flex items-center justify-center shrink-0 shadow-sm">
             <Instagram className="w-5 h-5" />
           </div>
         );
       case 'telegram':
         return (
           <div className="w-10 h-10 rounded-full bg-[#0088cc] text-white flex items-center justify-center shrink-0 shadow-sm">
-            <Send className="w-4 h-4 ml-0.5" />
+            <TelegramIcon className="w-5 h-5" />
           </div>
         );
       case 'webchat':
@@ -470,7 +619,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                     </div>
 
                     <div className="mt-2.5 pt-2 border-t border-gray-700/20 flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1.5">
                         <button
                           type="button"
                           onClick={() => handleToggleChannelAI(channel.id, channel.ai_enabled !== false)}
@@ -483,6 +632,15 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                         >
                           <Brain className="w-3 h-3" />
                           <span>{channel.ai_enabled !== false ? 'IA Ativa' : 'IA Pausada'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteChannel(channel.id, channel.name)}
+                          className="p-1 rounded text-gray-400 hover:text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer"
+                          title="Desconectar este canal"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
 
