@@ -124,6 +124,8 @@ export function useSupabaseChat(
 
     if (!detectedMediaUrl && /^https?:\/\/[^\s]+$/i.test(rawContent)) {
       detectedMediaUrl = rawContent;
+    } else if (!detectedMediaUrl && (rawContent.startsWith('data:image/') || rawContent.startsWith('data:audio/') || rawContent.startsWith('data:application/') || rawContent.startsWith('data:video/'))) {
+      detectedMediaUrl = rawContent;
     } else if (!detectedMediaUrl && rawContent.includes('http')) {
       const mediaMatch = rawContent.match(/https?:\/\/[^\s"'<>]+\.(jpg|jpeg|png|webp|gif|avif|bmp|mp4|ogg|opus|mp3|wav|m4a|aac|webm)(\?[^\s"'<>]*)?/i);
       if (mediaMatch) {
@@ -135,7 +137,7 @@ export function useSupabaseChat(
       row.content_type === 'audio' ||
       row.content_type === 'voice' ||
       row.content_type === 'ptt' ||
-      Boolean(detectedMediaUrl && /\.(ogg|opus|mp3|wav|m4a|aac)(\?[^\s]*)?$/i.test(detectedMediaUrl));
+      Boolean(detectedMediaUrl && (/\.(ogg|opus|mp3|wav|m4a|aac)(\?[^\s]*)?$/i.test(detectedMediaUrl) || detectedMediaUrl.startsWith('data:audio/')));
 
     const isStickerMsg =
       row.content_type === 'sticker' ||
@@ -152,13 +154,18 @@ export function useSupabaseChat(
 
     const isImageMsg =
       row.content_type === 'image' ||
-      Boolean(detectedMediaUrl && /\.(jpg|jpeg|png|avif|bmp)(\?[^\s]*)?$/i.test(detectedMediaUrl));
+      Boolean(detectedMediaUrl && (/\.(jpg|jpeg|png|avif|bmp|webp)(\?[^\s]*)?$/i.test(detectedMediaUrl) || detectedMediaUrl.startsWith('data:image/')));
+
+    const isDocumentMsg =
+      row.content_type === 'document' ||
+      Boolean(detectedMediaUrl && (/\.(pdf|docx?|xlsx?|pptx?|txt|csv|zip)(\?[^\s]*)?$/i.test(detectedMediaUrl) || detectedMediaUrl.startsWith('data:application/') || detectedMediaUrl.startsWith('data:text/')));
 
     let finalContentType: MessageContentType = 'text';
     if (isAudioMsg) finalContentType = 'audio';
     else if (isStickerMsg) finalContentType = 'sticker';
     else if (isGifMsg) finalContentType = 'gif';
     else if (isImageMsg) finalContentType = 'image';
+    else if (isDocumentMsg) finalContentType = 'document';
     else if (row.content_type) finalContentType = row.content_type as MessageContentType;
 
     return {
@@ -750,25 +757,31 @@ export function useSupabaseChat(
     async (
       targetConversationIdOrText: string,
       contentOrType?: string,
-      contentType: any = 'text'
+      contentType: any = 'text',
+      mediaUrl?: string,
+      customMetadata?: Record<string, any>
     ) => {
-      // Guarda inteligente: detecta se foi chamado como (conversationId, content, contentType)
-      // ou se foi chamado diretamente como (text, contentType)
+      // Guarda inteligente: detecta se foi chamado como (conversationId, content, contentType, mediaUrl, customMetadata)
+      // ou se foi chamado diretamente como (text, contentType, mediaUrl)
       let convId = targetConversationIdOrText;
       let msgContent = contentOrType || '';
       let msgType = contentType || 'text';
 
       const existsInConvs = conversationsRef.current.some((c) => c.id === convId);
-      if (!existsInConvs && selectedIdRef.current && (!contentOrType || contentOrType === 'text' || contentOrType === 'audio')) {
-        // Chamado com (text, contentType)
+      if (!existsInConvs && selectedIdRef.current && (!contentOrType || contentOrType === 'text' || contentOrType === 'audio' || contentOrType === 'image' || contentOrType === 'document')) {
+        // Chamado com (text, contentType, mediaUrl)
         msgContent = targetConversationIdOrText;
         convId = selectedIdRef.current;
-        if (contentOrType === 'text' || contentOrType === 'audio') {
+        if (contentOrType) {
           msgType = contentOrType;
         }
       }
 
-      if (!msgContent || !msgContent.trim()) return;
+      if (!msgContent && mediaUrl) {
+        msgContent = msgType === 'image' ? 'Foto' : msgType === 'audio' ? 'Áudio' : msgType === 'document' ? 'Documento' : 'Arquivo';
+      }
+
+      if (!msgContent && !mediaUrl) return;
 
       const now = new Date();
       const nowIso = now.toISOString();
@@ -814,6 +827,7 @@ export function useSupabaseChat(
 
       // Nome do operador/atendente: puxa do perfil exibido ao clicar no avatar
       const senderName = currentUser?.name || currentUser?.commercialName || 'Atendente Humano';
+      const resolvedMediaUrl = mediaUrl || (msgType === 'image' || msgType === 'audio' || msgType === 'document' ? (msgContent.startsWith('http') || msgContent.startsWith('data:') || msgContent.startsWith('blob:') || msgContent.startsWith('/uploads/') ? msgContent : undefined) : undefined);
 
       const newMsg: Message = {
         id: messageUuid,
@@ -823,11 +837,14 @@ export function useSupabaseChat(
         senderName: currentUser?.name ? `${currentUser.name} (Atendente)` : 'Você (Atendente)',
         contentType: msgType,
         content: msgContent,
+        mediaUrl: resolvedMediaUrl,
         createdAt: nowIso,
         timestamp: timeStr,
         status: 'sent',
         metadata: {
           webhookUrl: OUTGOING_WEBHOOK_URL,
+          ...(resolvedMediaUrl ? { mediaUrl: resolvedMediaUrl } : {}),
+          ...(customMetadata || {}),
         },
       };
 
@@ -876,10 +893,12 @@ export function useSupabaseChat(
           contact_name: contactName,
           contact_phone: contactPhone,
           content: msgContent,
+          media_url: resolvedMediaUrl || null,
           message: [
             {
               content: msgContent,
               content_type: msgType,
+              media_url: resolvedMediaUrl || null,
             },
           ],
           content_type: msgType,
@@ -957,6 +976,7 @@ export function useSupabaseChat(
             sender_type: 'agent',
             sender_name: senderName,
             content: msgContent,
+            media_url: resolvedMediaUrl || null,
             content_type: msgType,
             created_at: nowIso,
             status: resolvedWamid ? 'delivered' : 'sent',
@@ -964,6 +984,8 @@ export function useSupabaseChat(
               wamid: resolvedWamid || null,
               metaMessageId: resolvedWamid || null,
               outgoingWebhook: OUTGOING_WEBHOOK_URL,
+              ...(resolvedMediaUrl ? { mediaUrl: resolvedMediaUrl } : {}),
+              ...(customMetadata || {}),
             },
           };
 

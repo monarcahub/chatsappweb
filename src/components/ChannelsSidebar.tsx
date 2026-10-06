@@ -526,14 +526,14 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                       <Sparkles className="w-4 h-4" />
                     </div>
                     <div>
-                      <h3 className="font-bold text-base">Conectar Novo Canal</h3>
+                      <h3 className="font-bold text-base">Conectar Canais</h3>
                       <p className="text-[11px] text-[#8696a0]">
                         Escolha a plataforma para integrar ao workspace da <strong>{currentAccount?.name}</strong>
                       </p>
                     </div>
                   </div>
                   <button
-                    onClick={() => setIsConnectModalOpen(false)}
+                    onClick={resetConnectModal}
                     className="p-1 rounded-lg text-[#8696a0] hover:text-white hover:bg-[#313d45] cursor-pointer"
                   >
                     <X className="w-5 h-5" />
@@ -545,7 +545,8 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                   <div
                     onClick={() => {
                       setSelectedPlatform('whatsapp');
-                      setNewChannelName('WhatsApp Principal');
+                      setWhatsAppApiChoice(null);
+                      setNewChannelName('WhatsApp Comercial');
                     }}
                     className={`p-4 rounded-2xl border transition-all cursor-pointer group flex flex-col justify-between hover:scale-[1.01] ${
                       darkMode
@@ -677,7 +678,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                 <div className="pt-3 text-center">
                   <button
                     type="button"
-                    onClick={() => setIsConnectModalOpen(false)}
+                    onClick={resetConnectModal}
                     className={`px-4 py-2 rounded-xl text-xs font-semibold border transition-colors cursor-pointer ${
                       darkMode ? 'border-[#313d45] hover:bg-[#313d45] text-[#8696a0]' : 'border-gray-300 hover:bg-gray-100 text-gray-700'
                     }`}
@@ -708,7 +709,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                     </div>
                   </div>
                   <button
-                    onClick={() => setIsConnectModalOpen(false)}
+                    onClick={resetConnectModal}
                     className="p-1 rounded-lg text-[#8696a0] hover:text-white hover:bg-[#313d45] cursor-pointer"
                   >
                     <X className="w-5 h-5" />
@@ -809,7 +810,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                     </div>
                   </div>
                   <button
-                    onClick={() => setIsConnectModalOpen(false)}
+                    onClick={resetConnectModal}
                     className="p-1 rounded-lg text-[#8696a0] hover:text-white hover:bg-[#313d45] cursor-pointer"
                   >
                     <X className="w-5 h-5" />
@@ -925,7 +926,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                     </div>
                   </div>
                   <button
-                    onClick={() => setIsConnectModalOpen(false)}
+                    onClick={resetConnectModal}
                     className="p-1 rounded-lg text-[#8696a0] hover:text-white hover:bg-[#313d45] cursor-pointer"
                   >
                     <X className="w-5 h-5" />

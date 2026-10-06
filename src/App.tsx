@@ -566,9 +566,9 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
             <ChatArea
               conversation={selectedConversation}
               messages={currentMessages}
-              onSendMessage={(text, contentType) => {
+              onSendMessage={(text, contentType, mediaUrl, metadata) => {
                 if (selectedConversation) {
-                  sendMessage(selectedConversation.id, text, contentType);
+                  sendMessage(selectedConversation.id, text, contentType, mediaUrl, metadata);
                 }
               }}
               onToggleRightPanel={handleToggleCRM}

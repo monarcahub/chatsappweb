@@ -44,8 +44,10 @@ import {
   Archive,
   ArchiveRestore,
   FileText,
+  Headphones,
+  Loader2,
 } from 'lucide-react';
-import { Conversation, Message, ConversationStatus, Tag } from '../types';
+import { Conversation, Message, ConversationStatus, Tag, MessageContentType } from '../types';
 import { WhatsAppWallpaper } from './WhatsAppWallpaper';
 import { formatSaoPauloTime, formatSaoPauloDate } from '../utils/dateFormat';
 import { ChatMenuDropdown } from './ChatMenuDropdown';
@@ -56,7 +58,12 @@ import { WhatsAppFormatToolbar } from './WhatsAppFormatToolbar';
 interface ChatAreaProps {
   conversation: Conversation | null;
   messages: Message[];
-  onSendMessage: (text: string, contentType?: 'text' | 'audio') => void;
+  onSendMessage: (
+    text: string,
+    contentType?: MessageContentType,
+    mediaUrl?: string,
+    metadata?: Record<string, any>
+  ) => void;
   onToggleRightPanel: () => void;
   isRightPanelOpen: boolean;
   onBackToConversations: () => void;
@@ -246,6 +253,51 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   // Floating Toast feedback
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // Attachment menu and modals (Imagem, Documento, Áudio)
+  const [isAttachmentMenuOpen, setIsAttachmentMenuOpen] = useState(false);
+  const attachmentMenuRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const documentInputRef = useRef<HTMLInputElement>(null);
+  const audioInputRef = useRef<HTMLInputElement>(null);
+
+  // Attachment preview modals
+  const [imagePreviewModal, setImagePreviewModal] = useState<{
+    file: File;
+    previewUrl: string;
+    caption: string;
+    isUploading?: boolean;
+  } | null>(null);
+
+  const [documentPreviewModal, setDocumentPreviewModal] = useState<{
+    file: File;
+    previewUrl: string;
+    caption: string;
+    formattedSize: string;
+    isUploading?: boolean;
+  } | null>(null);
+
+  const [audioPreviewModal, setAudioPreviewModal] = useState<{
+    file: File;
+    previewUrl: string;
+    formattedSize: string;
+    isUploading?: boolean;
+  } | null>(null);
+
+  // Fecha menu de anexos ao clicar fora
+  useEffect(() => {
+    if (!isAttachmentMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (
+        attachmentMenuRef.current &&
+        !attachmentMenuRef.current.contains(e.target as Node)
+      ) {
+        setIsAttachmentMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [isAttachmentMenuOpen]);
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => {
@@ -263,6 +315,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   // Reset states when conversation changes
   useEffect(() => {
     setIsMenuOpen(false);
+    setIsAttachmentMenuOpen(false);
+    setImagePreviewModal(null);
+    setDocumentPreviewModal(null);
+    setAudioPreviewModal(null);
     setIsSearchOpen(false);
     setSearchQuery('');
     setIsSelectionMode(false);
@@ -280,6 +336,186 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
       scrollToBottom(false);
     }, 10);
   }, [conversation?.id, scrollToBottom]);
+
+  // Handlers para seleção de arquivos de anexo
+  const handleImageFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result as string;
+      setImagePreviewModal({
+        file,
+        previewUrl: dataUrl,
+        caption: '',
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleDocumentFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+
+    const formattedSize =
+      file.size > 1024 * 1024
+        ? `${(file.size / (1024 * 1024)).toFixed(1)} MB`
+        : `${Math.round(file.size / 1024)} KB`;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result as string;
+      setDocumentPreviewModal({
+        file,
+        previewUrl: dataUrl,
+        caption: '',
+        formattedSize,
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleAudioFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+
+    const formattedSize =
+      file.size > 1024 * 1024
+        ? `${(file.size / (1024 * 1024)).toFixed(1)} MB`
+        : `${Math.round(file.size / 1024)} KB`;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result as string;
+      setAudioPreviewModal({
+        file,
+        previewUrl: dataUrl,
+        formattedSize,
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleConfirmSendImage = async () => {
+    if (!imagePreviewModal || imagePreviewModal.isUploading) return;
+    const { file, previewUrl, caption } = imagePreviewModal;
+    setImagePreviewModal((prev) => (prev ? { ...prev, isUploading: true } : null));
+
+    let finalMediaUrl = previewUrl;
+    try {
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: previewUrl,
+          name: file.name,
+          type: file.type,
+        }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.url) {
+          finalMediaUrl = json.url;
+        }
+      }
+    } catch (err) {
+      console.warn('Upload fallback to dataUrl:', err);
+    }
+
+    onSendMessage(caption.trim() || 'Foto', 'image', finalMediaUrl, {
+      fileName: file.name,
+      fileSize:
+        file.size > 1024 * 1024
+          ? `${(file.size / (1024 * 1024)).toFixed(1)} MB`
+          : `${Math.round(file.size / 1024)} KB`,
+      mimeType: file.type,
+    });
+
+    setImagePreviewModal(null);
+    showToast('Imagem enviada com sucesso!');
+  };
+
+  const handleConfirmSendDocument = async () => {
+    if (!documentPreviewModal || documentPreviewModal.isUploading) return;
+    const { file, previewUrl, caption, formattedSize } = documentPreviewModal;
+    setDocumentPreviewModal((prev) => (prev ? { ...prev, isUploading: true } : null));
+
+    let finalMediaUrl = previewUrl;
+    try {
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: previewUrl,
+          name: file.name,
+          type: file.type,
+        }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.url) {
+          finalMediaUrl = json.url;
+        }
+      }
+    } catch (err) {
+      console.warn('Upload fallback to dataUrl:', err);
+    }
+
+    onSendMessage(
+      caption.trim() || file.name || 'Documento',
+      'document',
+      finalMediaUrl,
+      {
+        fileName: file.name,
+        fileSize: formattedSize,
+        mimeType: file.type,
+      }
+    );
+
+    setDocumentPreviewModal(null);
+    showToast('Documento enviado com sucesso!');
+  };
+
+  const handleConfirmSendAudio = async () => {
+    if (!audioPreviewModal || audioPreviewModal.isUploading) return;
+    const { file, previewUrl, formattedSize } = audioPreviewModal;
+    setAudioPreviewModal((prev) => (prev ? { ...prev, isUploading: true } : null));
+
+    let finalMediaUrl = previewUrl;
+    try {
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          data: previewUrl,
+          name: file.name,
+          type: file.type,
+        }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.url) {
+          finalMediaUrl = json.url;
+        }
+      }
+    } catch (err) {
+      console.warn('Upload fallback to dataUrl:', err);
+    }
+
+    onSendMessage(file.name || 'Mensagem de áudio', 'audio', finalMediaUrl, {
+      fileName: file.name,
+      fileSize: formattedSize,
+      mimeType: file.type,
+      audioDuration: '0:15',
+    });
+
+    setAudioPreviewModal(null);
+    showToast('Áudio enviado com sucesso!');
+  };
 
   const handleSend = () => {
     if (!inputText.trim()) return;
@@ -1417,7 +1653,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     msg.metadata?.audioUrl ||
                     msg.metadata?.stickerUrl ||
                     msg.metadata?.url ||
-                    (rawContent.startsWith('http') ? rawContent.trim().replace(/[.,;:)\]>]+$/, '') : '');
+                    (rawContent.startsWith('http') ||
+                    rawContent.startsWith('data:') ||
+                    rawContent.startsWith('blob:') ||
+                    rawContent.startsWith('/uploads/')
+                      ? rawContent.trim().replace(/[.,;:)\]>]+$/, '')
+                      : '');
 
                   // Detecção de link de mídia embutido no texto
                   const mediaLinkMatch = rawContent.match(
@@ -1453,7 +1694,26 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     !isSticker &&
                     !isGif &&
                     (msg.contentType === 'image' ||
-                      Boolean(effectiveMediaUrl && /\.(jpg|jpeg|png|avif|bmp)(\?[^\s]*)?$/i.test(effectiveMediaUrl)));
+                      effectiveMediaUrl.startsWith('data:image/') ||
+                      Boolean(
+                        effectiveMediaUrl &&
+                          /\.(jpg|jpeg|png|avif|bmp|webp)(\?[^\s]*)?$/i.test(effectiveMediaUrl)
+                      ));
+
+                  const isDocument =
+                    !isAudio &&
+                    !isSticker &&
+                    !isGif &&
+                    !isImage &&
+                    (msg.contentType === 'document' ||
+                      effectiveMediaUrl.startsWith('data:application/') ||
+                      effectiveMediaUrl.startsWith('data:text/') ||
+                      Boolean(
+                        effectiveMediaUrl &&
+                          /\.(pdf|doc|docx|xls|xlsx|ppt|pptx|txt|csv|zip|rar)(\?[^\s]*)?$/i.test(
+                            effectiveMediaUrl
+                          )
+                      ));
 
                   // 1. Áudio (PTT / Voice Note)
                   if (isAudio) {
@@ -1575,7 +1835,13 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
                   // 4. Imagem / Foto
                   if (isImage && effectiveMediaUrl) {
-                    const caption = rawContent && rawContent !== effectiveMediaUrl ? rawContent : '';
+                    const caption =
+                      rawContent &&
+                      rawContent !== effectiveMediaUrl &&
+                      rawContent !== 'Foto' &&
+                      rawContent !== '📷 Imagem'
+                        ? rawContent
+                        : '';
                     return (
                       <div className="relative rounded-lg overflow-hidden my-1 max-w-[300px] bg-black/5 dark:bg-black/20">
                         <img
@@ -1590,6 +1856,82 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                             <WhatsAppFormattedText text={caption} />
                           </div>
                         )}
+                      </div>
+                    );
+                  }
+
+                  // 4.1 Documento (PDF, DOCX, Planilha, TXT, etc.)
+                  if (isDocument) {
+                    const fileName =
+                      msg.metadata?.fileName ||
+                      (rawContent &&
+                      rawContent !== effectiveMediaUrl &&
+                      rawContent !== 'Documento' &&
+                      !rawContent.startsWith('http') &&
+                      !rawContent.startsWith('data:') &&
+                      !rawContent.startsWith('/uploads/')
+                        ? rawContent
+                        : 'Documento');
+                    const fileSize = msg.metadata?.fileSize || '';
+                    const isPdf = /\.pdf$/i.test(fileName) || effectiveMediaUrl.includes('pdf');
+                    return (
+                      <div className="flex flex-col gap-1.5 my-1 max-w-[320px]">
+                        <div
+                          className={`flex items-center gap-3 p-3 rounded-xl border transition-colors ${
+                            isRightSide
+                              ? 'bg-black/10 border-white/10 text-white'
+                              : darkMode
+                              ? 'bg-[#1f2c34] border-[#2a3942] text-[#d1d7db]'
+                              : 'bg-[#f0f2f5] border-[#e9edef] text-[#111b21]'
+                          }`}
+                        >
+                          <div
+                            className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${
+                              isPdf ? 'bg-red-500/20 text-red-500' : 'bg-[#00a884]/20 text-[#00a884]'
+                            }`}
+                          >
+                            <FileText className="w-5 h-5" />
+                          </div>
+                          <div className="flex-1 min-w-0 pr-2">
+                            <p className="text-sm font-medium truncate" title={fileName}>
+                              {fileName}
+                            </p>
+                            <p
+                              className={`text-[11px] ${
+                                isRightSide ? 'text-white/70' : darkMode ? 'text-[#8696a0]' : 'text-[#667781]'
+                              }`}
+                            >
+                              {fileSize || 'Documento'}
+                            </p>
+                          </div>
+                          {effectiveMediaUrl && (
+                            <a
+                              href={effectiveMediaUrl}
+                              download={fileName}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className={`p-2 rounded-full hover:bg-black/10 transition-colors shrink-0 ${
+                                isRightSide
+                                  ? 'text-white hover:text-white'
+                                  : darkMode
+                                  ? 'text-[#aebac1] hover:text-white'
+                                  : 'text-[#54656f] hover:text-[#111b21]'
+                              }`}
+                              title="Baixar documento"
+                            >
+                              <Download className="w-4 h-4" />
+                            </a>
+                          )}
+                        </div>
+                        {rawContent &&
+                          rawContent !== fileName &&
+                          rawContent !== effectiveMediaUrl &&
+                          rawContent !== 'Documento' && (
+                            <div className="px-1 text-[13.5px]">
+                              <WhatsAppFormattedText text={rawContent} />
+                            </div>
+                          )}
                       </div>
                     );
                   }
@@ -1714,8 +2056,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           darkMode ? 'bg-[#202c33] border-[#222e35]' : 'bg-[#f0f2f5] border-[#e9edef]'
         }`}
       >
-        <div className="flex items-center gap-1 text-[#8696a0] pb-1">
+        <div className="flex items-center gap-1 text-[#8696a0] pb-1 relative">
           <button
+            type="button"
             className={`p-1.5 rounded-full transition-colors ${
               darkMode ? 'hover:bg-[#374248] text-[#aebac1]' : 'hover:bg-[#e9edef] text-[#54656f]'
             }`}
@@ -1723,14 +2066,120 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           >
             <Smile className="w-5 h-5" />
           </button>
+
           <button
-            className={`p-1.5 rounded-full transition-colors ${
-              darkMode ? 'hover:bg-[#374248] text-[#aebac1]' : 'hover:bg-[#e9edef] text-[#54656f]'
+            type="button"
+            onClick={() => setIsAttachmentMenuOpen((prev) => !prev)}
+            className={`p-1.5 rounded-full transition-all cursor-pointer ${
+              isAttachmentMenuOpen
+                ? 'bg-[#00a884]/20 text-[#00a884]'
+                : darkMode
+                ? 'hover:bg-[#374248] text-[#aebac1]'
+                : 'hover:bg-[#e9edef] text-[#54656f]'
             }`}
-            title="Anexar arquivo, imagem ou documento"
+            title="Anexar (Imagem, Documento, Áudio)"
           >
-            <Paperclip className="w-5 h-5" />
+            <Paperclip
+              className={`w-5 h-5 transition-transform duration-200 ${
+                isAttachmentMenuOpen ? 'rotate-45 text-[#00a884]' : ''
+              }`}
+            />
           </button>
+
+          {/* Hidden File Inputs */}
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/*,video/mp4"
+            className="hidden"
+            onChange={handleImageFileChange}
+          />
+          <input
+            ref={documentInputRef}
+            type="file"
+            accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.rar,application/pdf"
+            className="hidden"
+            onChange={handleDocumentFileChange}
+          />
+          <input
+            ref={audioInputRef}
+            type="file"
+            accept="audio/*,.mp3,.wav,.ogg,.opus,.m4a,.aac"
+            className="hidden"
+            onChange={handleAudioFileChange}
+          />
+
+          {/* Attachment Popup Menu - ONLY Imagem, Documento and Áudio as requested */}
+          {isAttachmentMenuOpen && (
+            <div
+              ref={attachmentMenuRef}
+              className={`absolute bottom-12 left-0 mb-2 z-50 rounded-2xl shadow-2xl border p-2 flex flex-col gap-1 w-52 animate-in fade-in slide-in-from-bottom-2 duration-150 ${
+                darkMode
+                  ? 'bg-[#233138] border-[#2e3b43] text-[#e9edef] shadow-black/60'
+                  : 'bg-white border-[#e9edef] text-[#111b21] shadow-2xl'
+              }`}
+            >
+              {/* Option 1: Imagem */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAttachmentMenuOpen(false);
+                  imageInputRef.current?.click();
+                }}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all cursor-pointer group text-left ${
+                  darkMode ? 'hover:bg-[#182229]' : 'hover:bg-[#f5f6f6]'
+                }`}
+              >
+                <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-[#ac44cf] to-[#d66bf6] shadow-sm flex items-center justify-center text-white shrink-0 group-hover:scale-105 transition-transform">
+                  <ImageIcon className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-sm font-semibold leading-tight">Imagem</div>
+                  <div className="text-[11px] text-[#8696a0]">Fotos e imagens</div>
+                </div>
+              </button>
+
+              {/* Option 2: Documento */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAttachmentMenuOpen(false);
+                  documentInputRef.current?.click();
+                }}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all cursor-pointer group text-left ${
+                  darkMode ? 'hover:bg-[#182229]' : 'hover:bg-[#f5f6f6]'
+                }`}
+              >
+                <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-[#5f66cd] to-[#888efc] shadow-sm flex items-center justify-center text-white shrink-0 group-hover:scale-105 transition-transform">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-sm font-semibold leading-tight">Documento</div>
+                  <div className="text-[11px] text-[#8696a0]">PDF, DOCX, arquivos</div>
+                </div>
+              </button>
+
+              {/* Option 3: Áudio */}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsAttachmentMenuOpen(false);
+                  audioInputRef.current?.click();
+                }}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all cursor-pointer group text-left ${
+                  darkMode ? 'hover:bg-[#182229]' : 'hover:bg-[#f5f6f6]'
+                }`}
+              >
+                <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-[#e542a3] to-[#f368be] shadow-sm flex items-center justify-center text-white shrink-0 group-hover:scale-105 transition-transform">
+                  <Headphones className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="text-sm font-semibold leading-tight">Áudio</div>
+                  <div className="text-[11px] text-[#8696a0]">Arquivos de áudio</div>
+                </div>
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="flex-1 relative flex items-center min-h-[40px]">
@@ -2140,6 +2589,252 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 className="max-h-[80vh] max-w-full rounded-lg shadow-2xl object-contain"
               />
             )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Enviar Imagem com Legenda (Estilo WhatsApp) */}
+      {imagePreviewModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 flex flex-col items-center justify-between p-4 backdrop-blur-sm animate-in fade-in duration-200">
+          {/* Header */}
+          <div className="w-full max-w-4xl flex items-center justify-between text-white py-2">
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setImagePreviewModal(null)}
+                className="p-2 rounded-full hover:bg-white/10 transition-colors cursor-pointer"
+                title="Fechar"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              <div>
+                <h3 className="font-semibold text-sm">Enviar imagem</h3>
+                <p className="text-xs text-white/60 truncate max-w-xs">{imagePreviewModal.file.name}</p>
+              </div>
+            </div>
+            <div className="text-xs text-white/60">
+              {imagePreviewModal.file.size > 1024 * 1024
+                ? `${(imagePreviewModal.file.size / (1024 * 1024)).toFixed(1)} MB`
+                : `${Math.round(imagePreviewModal.file.size / 1024)} KB`}
+            </div>
+          </div>
+
+          {/* Imagem Central */}
+          <div className="flex-1 flex items-center justify-center p-2 max-w-4xl max-h-[65vh] w-full">
+            <img
+              src={imagePreviewModal.previewUrl}
+              alt="Prévia"
+              className="max-h-[62vh] max-w-full rounded-xl shadow-2xl object-contain"
+            />
+          </div>
+
+          {/* Barra de Legenda e Envio */}
+          <div className="w-full max-w-2xl pb-4">
+            <div
+              className={`flex items-center gap-3 p-2 rounded-2xl border shadow-xl ${
+                darkMode ? 'bg-[#202c33] border-[#2e3b43]' : 'bg-white border-[#e9edef]'
+              }`}
+            >
+              <input
+                type="text"
+                autoFocus
+                value={imagePreviewModal.caption}
+                onChange={(e) =>
+                  setImagePreviewModal((prev) => (prev ? { ...prev, caption: e.target.value } : null))
+                }
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleConfirmSendImage();
+                  }
+                }}
+                placeholder="Adicionar uma legenda..."
+                className={`flex-1 px-3 py-2 text-sm bg-transparent outline-none ${
+                  darkMode ? 'text-white placeholder-[#8696a0]' : 'text-[#111b21] placeholder-[#667781]'
+                }`}
+              />
+              <button
+                type="button"
+                onClick={handleConfirmSendImage}
+                disabled={imagePreviewModal.isUploading}
+                className="p-3 rounded-full bg-[#00a884] hover:bg-[#02906f] text-white transition-colors cursor-pointer disabled:opacity-50 shrink-0 shadow-md"
+                title="Enviar imagem"
+              >
+                {imagePreviewModal.isUploading ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <Send className="w-5 h-5" />
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Enviar Documento */}
+      {documentPreviewModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+          <div
+            className={`w-full max-w-md rounded-2xl p-6 shadow-2xl border ${
+              darkMode ? 'bg-[#222e35] border-[#2a3942] text-[#e9edef]' : 'bg-white border-[#e9edef] text-[#111b21]'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-base">Enviar Documento</h3>
+              <button
+                type="button"
+                onClick={() => setDocumentPreviewModal(null)}
+                className="p-1 rounded-full text-[#8696a0] hover:text-[#e9edef] cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div
+              className={`flex items-center gap-3.5 p-4 rounded-xl border mb-4 ${
+                darkMode ? 'bg-[#182229] border-[#2a3942]' : 'bg-[#f0f2f5] border-[#e9edef]'
+              }`}
+            >
+              <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-[#5f66cd] to-[#888efc] flex items-center justify-center text-white shrink-0 shadow-sm">
+                <FileText className="w-6 h-6" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold truncate" title={documentPreviewModal.file.name}>
+                  {documentPreviewModal.file.name}
+                </p>
+                <p className="text-xs text-[#8696a0] mt-0.5">
+                  {documentPreviewModal.formattedSize}
+                </p>
+              </div>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-xs text-[#8696a0] mb-1 font-medium">Legenda (opcional):</label>
+              <input
+                type="text"
+                autoFocus
+                value={documentPreviewModal.caption}
+                onChange={(e) =>
+                  setDocumentPreviewModal((prev) => (prev ? { ...prev, caption: e.target.value } : null))
+                }
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleConfirmSendDocument();
+                  }
+                }}
+                placeholder="Ex: Segue a proposta comercial em anexo..."
+                className={`w-full px-3 py-2 text-sm rounded-lg border outline-none ${
+                  darkMode
+                    ? 'bg-[#2a3942] border-[#374248] text-white placeholder-[#8696a0] focus:border-[#00a884]'
+                    : 'bg-white border-[#d1d7db] text-[#111b21] placeholder-[#8696a0] focus:border-[#00a884]'
+                }`}
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setDocumentPreviewModal(null)}
+                className={`px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer ${
+                  darkMode ? 'bg-[#111b21] text-[#8696a0] hover:text-white' : 'bg-gray-100 text-[#54656f] hover:bg-gray-200'
+                }`}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmSendDocument}
+                disabled={documentPreviewModal.isUploading}
+                className="px-5 py-2 rounded-xl text-xs font-semibold bg-[#00a884] hover:bg-[#02906f] text-white flex items-center gap-2 cursor-pointer shadow-sm disabled:opacity-50"
+              >
+                {documentPreviewModal.isUploading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Enviando...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    <span>Enviar Documento</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Enviar Arquivo de Áudio */}
+      {audioPreviewModal && (
+        <div className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+          <div
+            className={`w-full max-w-md rounded-2xl p-6 shadow-2xl border ${
+              darkMode ? 'bg-[#222e35] border-[#2a3942] text-[#e9edef]' : 'bg-white border-[#e9edef] text-[#111b21]'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-base">Enviar Áudio</h3>
+              <button
+                type="button"
+                onClick={() => setAudioPreviewModal(null)}
+                className="p-1 rounded-full text-[#8696a0] hover:text-[#e9edef] cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div
+              className={`flex items-center gap-3.5 p-4 rounded-xl border mb-4 ${
+                darkMode ? 'bg-[#182229] border-[#2a3942]' : 'bg-[#f0f2f5] border-[#e9edef]'
+              }`}
+            >
+              <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-[#e542a3] to-[#f368be] flex items-center justify-center text-white shrink-0 shadow-sm">
+                <Headphones className="w-6 h-6" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold truncate" title={audioPreviewModal.file.name}>
+                  {audioPreviewModal.file.name}
+                </p>
+                <p className="text-xs text-[#8696a0] mt-0.5">
+                  {audioPreviewModal.formattedSize}
+                </p>
+              </div>
+            </div>
+
+            <div className="mb-5">
+              <audio controls src={audioPreviewModal.previewUrl} className="w-full h-10 rounded-lg" />
+            </div>
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setAudioPreviewModal(null)}
+                className={`px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer ${
+                  darkMode ? 'bg-[#111b21] text-[#8696a0] hover:text-white' : 'bg-gray-100 text-[#54656f] hover:bg-gray-200'
+                }`}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmSendAudio}
+                disabled={audioPreviewModal.isUploading}
+                className="px-5 py-2 rounded-xl text-xs font-semibold bg-[#00a884] hover:bg-[#02906f] text-white flex items-center gap-2 cursor-pointer shadow-sm disabled:opacity-50"
+              >
+                {audioPreviewModal.isUploading ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Enviando...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    <span>Enviar Áudio</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { spawn } from 'child_process';
 import { Readable } from 'stream';
 import { createServer as createViteServer } from 'vite';
@@ -11,7 +12,15 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Diretório estático para anexos de mídia (imagens, documentos e áudios)
+const UPLOADS_DIR = path.join(process.cwd(), 'public', 'uploads');
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
+app.use('/uploads', express.static(UPLOADS_DIR));
 
 // Configuração do Supabase com service_role para operações seguras de backend
 const rawUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
@@ -40,6 +49,59 @@ app.get('/api/config', (req, res) => {
   });
 });
 // =========================================================================
+
+// Endpoint para upload de anexos de mensagens (imagens, documentos e áudios)
+app.post('/api/upload', (req, res) => {
+  try {
+    const { data, name, type } = req.body;
+    if (!data || typeof data !== 'string') {
+      return res.status(400).json({ error: 'Dados do arquivo ausentes' });
+    }
+
+    const matches = data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+    let buffer: Buffer;
+    let extension = 'bin';
+
+    if (matches && matches.length === 3) {
+      buffer = Buffer.from(matches[2], 'base64');
+      const mime = matches[1].toLowerCase();
+      if (mime.includes('jpeg') || mime.includes('jpg')) extension = 'jpg';
+      else if (mime.includes('png')) extension = 'png';
+      else if (mime.includes('webp')) extension = 'webp';
+      else if (mime.includes('gif')) extension = 'gif';
+      else if (mime.includes('pdf')) extension = 'pdf';
+      else if (mime.includes('audio/ogg') || mime.includes('opus')) extension = 'ogg';
+      else if (mime.includes('audio/mpeg') || mime.includes('audio/mp3') || mime.includes('mp3')) extension = 'mp3';
+      else if (mime.includes('audio/wav') || mime.includes('wav')) extension = 'wav';
+      else if (mime.includes('audio/m4a') || mime.includes('m4a')) extension = 'm4a';
+      else if (mime.includes('audio/aac') || mime.includes('aac')) extension = 'aac';
+      else if (name && name.includes('.')) extension = name.split('.').pop() || 'bin';
+    } else {
+      buffer = Buffer.from(data, 'base64');
+      if (name && name.includes('.')) extension = name.split('.').pop() || 'bin';
+    }
+
+    const safeTimestamp = Date.now();
+    const safeRandom = Math.random().toString(36).substring(2, 9);
+    const cleanFileName = name ? name.replace(/[^a-zA-Z0-9._-]/g, '_') : `file_${safeTimestamp}.${extension}`;
+    const storedFileName = `${safeTimestamp}_${safeRandom}_${cleanFileName}`;
+    const targetFilePath = path.join(UPLOADS_DIR, storedFileName);
+
+    fs.writeFileSync(targetFilePath, buffer);
+
+    const fileUrl = `/uploads/${storedFileName}`;
+    res.json({
+      success: true,
+      url: fileUrl,
+      fileName: name || cleanFileName,
+      fileSize: buffer.length,
+      mimeType: type || 'application/octet-stream',
+    });
+  } catch (err: any) {
+    console.error('[Upload] Erro ao processar anexo:', err);
+    res.status(500).json({ error: err.message || 'Falha ao salvar anexo' });
+  }
+});
 
 // Healthcheck
 app.get('/api/health', (req, res) => {
