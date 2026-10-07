@@ -121,12 +121,16 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
   const [isAppLocked, setIsAppLocked] = useState(false);
   const [allTags] = useState<Tag[]>(INITIAL_TAGS);
   const [channelsCount, setChannelsCount] = useState<number | null>(null);
+  const [connectedChannels, setConnectedChannels] = useState<
+    Array<{ id: string; name: string; type: ChannelType; is_active?: boolean }>
+  >([]);
   const [hasDismissedOnboarding, setHasDismissedOnboarding] = useState(false);
 
   // Consulta canais reais vinculados à empresa no Supabase
   const refreshChannelsCount = async () => {
     if (!currentAccount?.id) {
       setChannelsCount(0);
+      setConnectedChannels([]);
       return;
     }
 
@@ -139,12 +143,13 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
 
       // 1. Consulta direta ao Supabase
       if (isSupabaseConfigured) {
-        let query = supabase.from('channels').select('id');
+        let query = supabase.from('channels').select('id, name, type, is_active');
         if (currentAccount.id === 'all') {
           if (userAccountIds.length > 0) {
             query = query.in('account_id', userAccountIds);
           } else {
             setChannelsCount(0);
+            setConnectedChannels([]);
             return;
           }
         } else {
@@ -154,6 +159,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
         const { data, error } = await query;
         if (!error && Array.isArray(data)) {
           setChannelsCount(data.length);
+          setConnectedChannels(data as any);
           return;
         }
       }
@@ -168,7 +174,9 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
       const res = await fetch(`/api/channels?${queryParams.toString()}`);
       if (res.ok) {
         const data = await res.json();
-        setChannelsCount(Array.isArray(data.channels) ? data.channels.length : 0);
+        const chs = Array.isArray(data.channels) ? data.channels : [];
+        setChannelsCount(chs.length);
+        setConnectedChannels(chs);
       }
     } catch (e) {
       console.warn('Erro ao consultar canais:', e);
@@ -177,7 +185,23 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
 
   useEffect(() => {
     refreshChannelsCount();
-  }, [currentAccount?.id]);
+
+    if (!isSupabaseConfigured || !currentAccount?.id) return;
+    const sub = supabase
+      .channel(`channels-app-realtime-${currentAccount.id}-${Date.now()}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'channels' },
+        () => {
+          refreshChannelsCount();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(sub);
+    };
+  }, [currentAccount?.id, availableAccounts]);
 
   // 1. Carregamento do SDK JavaScript da Meta
   const META_APP_ID = '1322580525486349';
@@ -563,6 +587,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               realtimeLatencyMs={realtimeLatencyMs}
               currentAccount={currentAccount}
               availableAccounts={availableAccounts}
+              connectedChannels={connectedChannels}
               onSwitchAccount={onSwitchAccount}
               onLogout={onLogout}
               onOpenSettings={() =>

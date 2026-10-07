@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   Search, 
   Pin, 
@@ -32,6 +32,7 @@ import { formatSaoPauloDate, formatAudioDuration } from '../utils/dateFormat';
 import { TopMoreMenuDropdown } from './TopMoreMenuDropdown';
 import { ConversationContextMenu } from './ConversationContextMenu';
 import { TelegramIcon } from './TelegramIcon';
+import { supabase, isSupabaseConfigured, ensureSupabaseConfig } from '../lib/supabase';
 import {
   requestBrowserNotificationPermission,
   playIncomingNotificationSound,
@@ -58,6 +59,7 @@ interface SidebarProps {
   realtimeLatencyMs?: number | null;
   currentAccount?: Account | null;
   availableAccounts?: Account[];
+  connectedChannels?: Array<{ id?: string; name?: string; type: ChannelType; is_active?: boolean }>;
   onSwitchAccount?: (id: string) => void;
   onLogout?: () => void;
   onOpenSettings?: () => void;
@@ -94,6 +96,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   realtimeLatencyMs = null,
   currentAccount,
   availableAccounts = [],
+  connectedChannels = [],
   onSwitchAccount,
   onLogout,
   onOpenSettings,
@@ -159,6 +162,87 @@ export const Sidebar: React.FC<SidebarProps> = ({
       setToastMessage(null);
     }, 3000);
   };
+
+  // Busca canais internos da conta caso não venham preenchidos via prop
+  const [internalChannels, setInternalChannels] = useState<Array<{ id: string; name: string; type: ChannelType }>>([]);
+
+  useEffect(() => {
+    if (!currentAccount?.id) {
+      setInternalChannels([]);
+      return;
+    }
+
+    const loadChannels = async () => {
+      await ensureSupabaseConfig();
+      if (!isSupabaseConfigured) return;
+
+      const userAccountIds = (availableAccounts || [])
+        .map((a) => a.id)
+        .filter((id) => Boolean(id) && id !== 'all');
+
+      let query = supabase.from('channels').select('id, name, type, is_active, account_id');
+      if (currentAccount.id === 'all') {
+        if (userAccountIds.length > 0) {
+          query = query.in('account_id', userAccountIds);
+        } else {
+          setInternalChannels([]);
+          return;
+        }
+      } else {
+        query = query.eq('account_id', currentAccount.id);
+      }
+
+      const { data } = await query;
+      if (data) {
+        setInternalChannels(data as any);
+      }
+    };
+
+    loadChannels();
+
+    // Inscrição em tempo real para sincronização instantânea de novos canais cadastrados
+    const channelSub = supabase
+      .channel(`sidebar-channels-realtime-${currentAccount.id}-${Date.now()}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'channels' },
+        () => {
+          loadChannels();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channelSub);
+    };
+  }, [currentAccount?.id, availableAccounts]);
+
+  // Lista dos tipos de canais que estão de fato conectados na conta do usuário logado
+  const connectedChannelTypes = useMemo(() => {
+    const typesSet = new Set<ChannelType>();
+
+    const pool = (connectedChannels && connectedChannels.length > 0 ? connectedChannels : internalChannels)
+      .filter((ch: any) => ch && ch.is_active !== false);
+
+    for (const ch of pool) {
+      const t = String(ch.type || '').toLowerCase().trim();
+      const n = String(ch.name || '').toLowerCase().trim();
+      if (t.includes('telegram') || n.includes('telegram')) typesSet.add('telegram');
+      else if (t.includes('instagram') || n.includes('instagram')) typesSet.add('instagram');
+      else if (t.includes('webchat') || t.includes('site') || n.includes('site') || n.includes('webchat')) typesSet.add('webchat');
+      else if (t.includes('whatsapp') || n.includes('whats') || n.includes('waba')) typesSet.add('whatsapp');
+      else if (ch.type) typesSet.add(ch.type as ChannelType);
+    }
+
+    return Array.from(typesSet);
+  }, [connectedChannels, internalChannels]);
+
+  // Reseta canal selecionado se ele não estiver nos canais conectados da empresa
+  useEffect(() => {
+    if (selectedChannel !== 'all' && connectedChannelTypes.length > 0 && !connectedChannelTypes.includes(selectedChannel)) {
+      onChannelChange('all');
+    }
+  }, [connectedChannelTypes, selectedChannel, onChannelChange]);
 
   // Separação de conversas arquivadas vs ativas
   const archivedConversations = conversations.filter((c) => c.isArchived);
@@ -521,86 +605,98 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       )}
 
-      {/* Omnichannel Channel Filter Tabs */}
-      <div
-        className={`px-3 py-1.5 flex items-center gap-1.5 border-b overflow-x-auto no-scrollbar ${
-          darkMode ? 'bg-[#111b21] border-[#222e35]' : 'bg-white border-[#e9edef]'
-        }`}
-      >
-        <button
-          id="channel-all"
-          onClick={() => onChannelChange('all')}
-          className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium transition-all whitespace-nowrap ${
-            selectedChannel === 'all'
-              ? 'bg-[#00a884] text-white font-semibold'
-              : darkMode
-              ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
-              : 'bg-[#e9edef] text-[#54656f]'
+      {/* Omnichannel Channel Filter Tabs - Visível estritamente para os canais conectados na conta do usuário */}
+      {connectedChannelTypes.length > 0 && (
+        <div
+          className={`px-3 py-1.5 flex items-center gap-1.5 border-b overflow-x-auto no-scrollbar ${
+            darkMode ? 'bg-[#111b21] border-[#222e35]' : 'bg-white border-[#e9edef]'
           }`}
         >
-          Todos Canais
-        </button>
+          {connectedChannelTypes.length > 1 && (
+            <button
+              id="channel-all"
+              onClick={() => onChannelChange('all')}
+              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium transition-all whitespace-nowrap ${
+                selectedChannel === 'all'
+                  ? 'bg-[#00a884] text-white font-semibold'
+                  : darkMode
+                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
+                  : 'bg-[#e9edef] text-[#54656f]'
+              }`}
+            >
+              Todos os Canais
+            </button>
+          )}
 
-        <button
-          id="channel-whatsapp"
-          onClick={() => onChannelChange('whatsapp')}
-          className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap ${
-            selectedChannel === 'whatsapp'
-              ? 'bg-[#25d366] text-white font-semibold'
-              : darkMode
-              ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
-              : 'bg-[#e9edef] text-[#54656f]'
-          }`}
-        >
-          <MessageSquare className="w-3 h-3" />
-          <span>WhatsApp</span>
-        </button>
+          {connectedChannelTypes.includes('whatsapp') && (
+            <button
+              id="channel-whatsapp"
+              onClick={() => onChannelChange(selectedChannel === 'whatsapp' && connectedChannelTypes.length > 1 ? 'all' : 'whatsapp')}
+              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap ${
+                selectedChannel === 'whatsapp' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
+                  ? 'bg-[#25d366] text-white font-semibold'
+                  : darkMode
+                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
+                  : 'bg-[#e9edef] text-[#54656f]'
+              }`}
+            >
+              <MessageSquare className="w-3 h-3" />
+              <span>WhatsApp</span>
+            </button>
+          )}
 
-        <button
-          id="channel-instagram"
-          onClick={() => onChannelChange('instagram')}
-          className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap ${
-            selectedChannel === 'instagram'
-              ? 'bg-gradient-to-r from-purple-600 to-rose-600 text-white font-semibold'
-              : darkMode
-              ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
-              : 'bg-[#e9edef] text-[#54656f]'
-          }`}
-        >
-          <Instagram className="w-3 h-3" />
-          <span>Instagram</span>
-        </button>
+          {connectedChannelTypes.includes('instagram') && (
+            <button
+              id="channel-instagram"
+              onClick={() => onChannelChange(selectedChannel === 'instagram' && connectedChannelTypes.length > 1 ? 'all' : 'instagram')}
+              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap ${
+                selectedChannel === 'instagram' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
+                  ? 'bg-gradient-to-r from-purple-600 to-rose-600 text-white font-semibold'
+                  : darkMode
+                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
+                  : 'bg-[#e9edef] text-[#54656f]'
+              }`}
+            >
+              <Instagram className="w-3 h-3" />
+              <span>Instagram</span>
+            </button>
+          )}
 
-        <button
-          id="channel-telegram"
-          onClick={() => onChannelChange('telegram')}
-          className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap ${
-            selectedChannel === 'telegram'
-              ? 'bg-[#0088cc] text-white font-semibold'
-              : darkMode
-              ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
-              : 'bg-[#e9edef] text-[#54656f]'
-          }`}
-        >
-          <TelegramIcon className="w-3 h-3" />
-          <span>Telegram</span>
-        </button>
+          {connectedChannelTypes.includes('telegram') && (
+            <button
+              id="channel-telegram"
+              onClick={() => onChannelChange(selectedChannel === 'telegram' && connectedChannelTypes.length > 1 ? 'all' : 'telegram')}
+              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap ${
+                selectedChannel === 'telegram' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
+                  ? 'bg-[#0088cc] text-white font-semibold'
+                  : darkMode
+                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
+                  : 'bg-[#e9edef] text-[#54656f]'
+              }`}
+            >
+              <TelegramIcon className="w-3 h-3" />
+              <span>Telegram</span>
+            </button>
+          )}
 
-        <button
-          id="channel-webchat"
-          onClick={() => onChannelChange('webchat')}
-          className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap ${
-            selectedChannel === 'webchat'
-              ? 'bg-blue-600 text-white font-semibold'
-              : darkMode
-              ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
-              : 'bg-[#e9edef] text-[#54656f]'
-          }`}
-        >
-          <Globe className="w-3 h-3" />
-          <span>Chat Site</span>
-        </button>
-      </div>
+          {connectedChannelTypes.includes('webchat') && (
+            <button
+              id="channel-webchat"
+              onClick={() => onChannelChange(selectedChannel === 'webchat' && connectedChannelTypes.length > 1 ? 'all' : 'webchat')}
+              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap ${
+                selectedChannel === 'webchat' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
+                  ? 'bg-blue-600 text-white font-semibold'
+                  : darkMode
+                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
+                  : 'bg-[#e9edef] text-[#54656f]'
+              }`}
+            >
+              <Globe className="w-3 h-3" />
+              <span>Chat Site</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Search Input Box */}
       <div className="px-3 pt-2 pb-1.5">

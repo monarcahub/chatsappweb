@@ -159,13 +159,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await ensureSupabaseConfig();
         if (!isSupabaseConfigured) return;
 
-        // Autorização estrita: auth.uid() -> account_users.user_id = user.id
+        // Autorização estrita: auth.uid() -> account_users.user_id = user.id (com fallback para user.email)
+        let accountUserRows: any[] | null = null;
         const { data: byUserId, error: byUserIdErr } = await supabase
           .from('account_users')
           .select('account_id, role, is_ai_agent, accounts(*)')
           .eq('user_id', user.id);
 
-        if (byUserIdErr) {
+        if (byUserId && byUserId.length > 0) {
+          accountUserRows = byUserId;
+        } else if (user.email) {
+          const { data: byEmail } = await supabase
+            .from('account_users')
+            .select('account_id, role, is_ai_agent, accounts(*)')
+            .eq('email', user.email.toLowerCase().trim());
+          if (byEmail && byEmail.length > 0) {
+            accountUserRows = byEmail;
+            supabase
+              .from('account_users')
+              .update({ user_id: user.id })
+              .eq('email', user.email.toLowerCase().trim())
+              .is('user_id', null)
+              .then(() => {});
+          }
+        }
+
+        if (byUserIdErr && !accountUserRows) {
           console.warn('Erro ao sincronizar account_users:', byUserIdErr);
           return;
         }
@@ -173,8 +192,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Se o onboarding foi iniciado durante a chamada, aborta sem alterar o estado
         if (isRegisteringRef.current) return;
 
-        if (byUserId) {
-          const userAccounts: Account[] = byUserId
+        if (accountUserRows) {
+          const userAccounts: Account[] = accountUserRows
             .filter((r: any) => r && (r.is_ai_agent === null || r.is_ai_agent === false))
             .map((r: any) => r.accounts)
             .filter((a: any) => Boolean(a && a.id))

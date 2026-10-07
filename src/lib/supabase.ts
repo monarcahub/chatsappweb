@@ -1,9 +1,13 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-// Variáveis de ambiente no padrão Vite
+// Variáveis de ambiente no padrão Vite com fallback de produção resiliente
 const metaEnv = (import.meta as any).env || {};
-const buildUrl = metaEnv.VITE_SUPABASE_URL || '';
-const buildAnonKey = metaEnv.VITE_SUPABASE_ANON_KEY || '';
+const DEFAULT_SUPABASE_URL = 'https://vhibadmtznoomdanosyj.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZoaWJhZG10em5vb21kYW5vc3lqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg4NzY2ODcsImV4cCI6MjEwNDQ1MjY4N30.elJT5fO71xtPwE1FhYm26McJAZTvh0ePHI3d0zofZgg';
+
+const buildUrl = metaEnv.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL;
+const buildAnonKey = metaEnv.VITE_SUPABASE_ANON_KEY || DEFAULT_SUPABASE_ANON_KEY;
 
 // Limpeza automática de URL caso venha com /rest/v1 ou barra final
 export const sanitizeSupabaseUrl = (url: string): string => {

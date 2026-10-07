@@ -402,12 +402,15 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
       await ensureSupabaseConfig();
       let created = false;
 
+      const targetAccountId =
+        currentAccount.id === 'all' ? (allowedAccountIds[0] || currentAccount.id) : currentAccount.id;
+
       // 1. Tenta salvar diretamente no Supabase
       if (isSupabaseConfigured) {
         const { data, error } = await supabase
           .from('channels')
           .insert({
-            account_id: currentAccount.id,
+            account_id: targetAccountId,
             name: newChannelName.trim(),
             type: targetType,
             is_active: true,
@@ -429,7 +432,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            account_id: currentAccount.id,
+            account_id: targetAccountId,
             name: newChannelName.trim(),
             type: targetType,
             config: channelConfig,

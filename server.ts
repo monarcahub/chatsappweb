@@ -10,7 +10,14 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+// Extrai porta dos argumentos de linha de comando (--port 3000) ou padrão 3000
+// Evita conflito com a porta 8080 usada pelo NGINX no ambiente Cloud Run
+const args = process.argv.slice(2);
+const portArgIndex = args.indexOf('--port');
+const cliPort = portArgIndex !== -1 && args[portArgIndex + 1] ? parseInt(args[portArgIndex + 1], 10) : null;
+const envPort = process.env.PORT && process.env.PORT !== '8080' ? parseInt(process.env.PORT, 10) : null;
+const PORT = cliPort || envPort || 3000;
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -464,9 +471,16 @@ app.post('/api/channels', async (req, res) => {
   }
 
   try {
-    const { account_id, name, type, config } = req.body;
+    let { account_id, name, type, config } = req.body;
     if (!account_id || !name || !type) {
       return res.status(400).json({ error: 'account_id, name e type são obrigatórios' });
+    }
+
+    if (account_id === 'all') {
+      const { data: firstAcc } = await supabaseAdmin.from('accounts').select('id').limit(1).maybeSingle();
+      if (firstAcc?.id) {
+        account_id = firstAcc.id;
+      }
     }
 
     const { data, error } = await supabaseAdmin
@@ -1205,7 +1219,7 @@ app.post('/api/auth/update-credentials', async (req, res) => {
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true, hmr: false },
+      server: { middlewareMode: true, hmr: false, ws: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);
