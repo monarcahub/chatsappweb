@@ -594,6 +594,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
                 setActiveRailTab((activeRailTab as string) === 'settings' ? 'chats' : 'settings')
               }
               isSettingsOpen={(activeRailTab as string) === 'settings'}
+              onOpenChannels={() => setActiveRailTab('channels')}
               onOpenProfile={() => setIsProfileOpen(true)}
               onOpenCRM={handleToggleCRM}
               onMarkAllAsRead={markAllAsRead}
@@ -623,8 +624,14 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               user={user}
               onOpenChannels={() => setActiveRailTab('channels')}
               onOpenAIBrain={() => setIsAIBrainOpen(true)}
-              onOpenNewChat={() => setIsNewChatModalOpen(true)}
-              onSkipToDashboard={() => setHasDismissedOnboarding(true)}
+              onGoToConversations={() => {
+                setActiveRailTab('chats');
+                setHasDismissedOnboarding(true);
+              }}
+              onSkipToDashboard={() => {
+                setActiveRailTab('chats');
+                setHasDismissedOnboarding(true);
+              }}
             />
           ) : (
             <ChatArea

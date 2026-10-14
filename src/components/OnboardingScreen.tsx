@@ -21,7 +21,8 @@ interface OnboardingScreenProps {
   user: AuthUser;
   onOpenChannels: () => void;
   onOpenAIBrain: () => void;
-  onOpenNewChat: () => void;
+  onOpenNewChat?: () => void;
+  onGoToConversations?: () => void;
   onSkipToDashboard?: () => void;
 }
 
@@ -32,9 +33,12 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
   onOpenChannels,
   onOpenAIBrain,
   onOpenNewChat,
+  onGoToConversations,
   onSkipToDashboard,
 }) => {
   const [isPlayingVideo, setIsPlayingVideo] = useState(false);
+
+  const handleStartConversations = onGoToConversations || onSkipToDashboard || onOpenNewChat;
 
   return (
     <div
@@ -59,14 +63,14 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
                 Boas-vindas ao ChatsApp Web, {account.name}!
               </h1>
               <p className={`text-sm mt-2 max-w-xl leading-relaxed ${darkMode ? 'text-[#8696a0]' : 'text-[#667781]'}`}>
-                Olá <strong>{user.name}</strong>, seu ambiente corporativo foi criado com sucesso. Siga o guia abaixo para conectar seu primeiro canal de WhatsApp e ativar seu Agente IA.
+                Olá <strong>{user.name}</strong>, seu ambiente corporativo foi criado com sucesso. Siga o guia abaixo para conectar seu canal e ativar seu Agente IA.
               </p>
             </div>
 
             <div className="shrink-0 flex items-center gap-3">
-              {onSkipToDashboard && (
+              {(onSkipToDashboard || onGoToConversations) && (
                 <button
-                  onClick={onSkipToDashboard}
+                  onClick={handleStartConversations}
                   className={`px-4 py-3 rounded-xl border text-sm font-semibold transition-all ${
                     darkMode ? 'border-[#313d45] hover:bg-[#313d45] text-[#8696a0]' : 'border-gray-300 hover:bg-gray-100 text-gray-700'
                   }`}
@@ -79,7 +83,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
                 className="px-5 py-3 rounded-xl bg-[#00a884] hover:bg-[#009374] text-white text-sm font-semibold shadow-md flex items-center gap-2 transition-all active:scale-[0.99]"
               >
                 <Smartphone className="w-4 h-4" />
-                Conectar WhatsApp
+                Conectar Canal
               </button>
             </div>
           </div>
@@ -97,9 +101,9 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
               <div className="w-10 h-10 rounded-xl bg-[#25d366]/20 text-[#25d366] flex items-center justify-center font-bold text-sm mb-3">
                 1
               </div>
-              <h3 className="text-base font-bold mb-1">Conectar WhatsApp</h3>
+              <h3 className="text-base font-bold mb-1">Conectar Canal</h3>
               <p className={`text-xs leading-relaxed mb-4 ${darkMode ? 'text-[#8696a0]' : 'text-[#667781]'}`}>
-                Conecte seu número de WhatsApp via QR Code ou Meta Cloud API oficial para receber mensagens na caixa de entrada.
+                WhatsApp, direct do Instagram, Telegram ou Chat do site.
               </p>
             </div>
             <button
@@ -155,13 +159,13 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
               </p>
             </div>
             <button
-              onClick={onOpenNewChat}
+              onClick={handleStartConversations}
               className={`w-full py-2.5 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${
                 darkMode ? 'bg-[#111b21] hover:bg-[#2a3942] text-blue-400' : 'bg-[#f0f2f5] hover:bg-[#e9edef] text-blue-600'
               }`}
             >
               <MessageSquare className="w-3.5 h-3.5" />
-              <span>Novo Chat</span>
+              <span>comece a conversar!</span>
             </button>
           </div>
         </div>

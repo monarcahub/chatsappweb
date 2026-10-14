@@ -68,6 +68,7 @@ interface SidebarProps {
   onMarkAllAsRead?: () => void;
   onLockApp?: () => void;
   isSettingsOpen?: boolean;
+  onOpenChannels?: () => void;
   onDeleteConversation?: (id: string) => void;
   onClearMessages?: (id: string) => void;
   onToggleFavorite?: (id: string) => void;
@@ -105,6 +106,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onMarkAllAsRead,
   onLockApp,
   isSettingsOpen = false,
+  onOpenChannels,
   onDeleteConversation,
   onClearMessages,
   onToggleFavorite,
@@ -605,99 +607,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       )}
 
-      {/* Omnichannel Channel Filter Tabs - Visível estritamente para os canais conectados na conta do usuário */}
-      {connectedChannelTypes.length > 0 && (
-        <div
-          className={`px-3 py-1.5 flex items-center gap-1.5 border-b overflow-x-auto no-scrollbar ${
-            darkMode ? 'bg-[#111b21] border-[#222e35]' : 'bg-white border-[#e9edef]'
-          }`}
-        >
-          {connectedChannelTypes.length > 1 && (
-            <button
-              id="channel-all"
-              onClick={() => onChannelChange('all')}
-              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium transition-all whitespace-nowrap ${
-                selectedChannel === 'all'
-                  ? 'bg-[#00a884] text-white font-semibold'
-                  : darkMode
-                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
-                  : 'bg-[#e9edef] text-[#54656f]'
-              }`}
-            >
-              Todos os Canais
-            </button>
-          )}
-
-          {connectedChannelTypes.includes('whatsapp') && (
-            <button
-              id="channel-whatsapp"
-              onClick={() => onChannelChange(selectedChannel === 'whatsapp' && connectedChannelTypes.length > 1 ? 'all' : 'whatsapp')}
-              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap ${
-                selectedChannel === 'whatsapp' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
-                  ? 'bg-[#25d366] text-white font-semibold'
-                  : darkMode
-                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
-                  : 'bg-[#e9edef] text-[#54656f]'
-              }`}
-            >
-              <MessageSquare className="w-3 h-3" />
-              <span>WhatsApp</span>
-            </button>
-          )}
-
-          {connectedChannelTypes.includes('instagram') && (
-            <button
-              id="channel-instagram"
-              onClick={() => onChannelChange(selectedChannel === 'instagram' && connectedChannelTypes.length > 1 ? 'all' : 'instagram')}
-              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap ${
-                selectedChannel === 'instagram' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
-                  ? 'bg-gradient-to-r from-purple-600 to-rose-600 text-white font-semibold'
-                  : darkMode
-                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
-                  : 'bg-[#e9edef] text-[#54656f]'
-              }`}
-            >
-              <Instagram className="w-3 h-3" />
-              <span>Instagram</span>
-            </button>
-          )}
-
-          {connectedChannelTypes.includes('telegram') && (
-            <button
-              id="channel-telegram"
-              onClick={() => onChannelChange(selectedChannel === 'telegram' && connectedChannelTypes.length > 1 ? 'all' : 'telegram')}
-              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap ${
-                selectedChannel === 'telegram' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
-                  ? 'bg-[#0088cc] text-white font-semibold'
-                  : darkMode
-                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
-                  : 'bg-[#e9edef] text-[#54656f]'
-              }`}
-            >
-              <TelegramIcon className="w-3 h-3" />
-              <span>Telegram</span>
-            </button>
-          )}
-
-          {connectedChannelTypes.includes('webchat') && (
-            <button
-              id="channel-webchat"
-              onClick={() => onChannelChange(selectedChannel === 'webchat' && connectedChannelTypes.length > 1 ? 'all' : 'webchat')}
-              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap ${
-                selectedChannel === 'webchat' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
-                  ? 'bg-blue-600 text-white font-semibold'
-                  : darkMode
-                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
-                  : 'bg-[#e9edef] text-[#54656f]'
-              }`}
-            >
-              <Globe className="w-3 h-3" />
-              <span>Chat Site</span>
-            </button>
-          )}
-        </div>
-      )}
-
       {/* Search Input Box */}
       <div className="px-3 pt-2 pb-1.5">
         <div
@@ -724,6 +633,117 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
         </div>
       </div>
+
+      {/* Omnichannel Channel Filter Tabs - Logo abaixo da caixa de pesquisa */}
+      {connectedChannelTypes.length > 0 && (
+        <div
+          className={`px-3 py-1.5 flex items-center gap-1.5 border-b overflow-x-auto no-scrollbar ${
+            darkMode ? 'bg-[#111b21] border-[#222e35]' : 'bg-white border-[#e9edef]'
+          }`}
+        >
+          {connectedChannelTypes.length > 1 && (
+            <button
+              id="channel-all"
+              onClick={() => onChannelChange('all')}
+              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium transition-all whitespace-nowrap cursor-pointer ${
+                selectedChannel === 'all'
+                  ? 'bg-[#00a884] text-white font-semibold'
+                  : darkMode
+                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
+                  : 'bg-[#e9edef] text-[#54656f]'
+              }`}
+            >
+              Todos os Canais
+            </button>
+          )}
+
+          {connectedChannelTypes.includes('whatsapp') && (
+            <button
+              id="channel-whatsapp"
+              onClick={() => onChannelChange(selectedChannel === 'whatsapp' && connectedChannelTypes.length > 1 ? 'all' : 'whatsapp')}
+              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap cursor-pointer ${
+                selectedChannel === 'whatsapp' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
+                  ? 'bg-[#25d366] text-white font-semibold'
+                  : darkMode
+                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
+                  : 'bg-[#e9edef] text-[#54656f]'
+              }`}
+            >
+              <MessageSquare className="w-3 h-3" />
+              <span>WhatsApp</span>
+            </button>
+          )}
+
+          {connectedChannelTypes.includes('instagram') && (
+            <button
+              id="channel-instagram"
+              onClick={() => onChannelChange(selectedChannel === 'instagram' && connectedChannelTypes.length > 1 ? 'all' : 'instagram')}
+              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap cursor-pointer ${
+                selectedChannel === 'instagram' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
+                  ? 'bg-gradient-to-r from-purple-600 to-rose-600 text-white font-semibold'
+                  : darkMode
+                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
+                  : 'bg-[#e9edef] text-[#54656f]'
+              }`}
+            >
+              <Instagram className="w-3 h-3" />
+              <span>Instagram</span>
+            </button>
+          )}
+
+          {connectedChannelTypes.includes('telegram') && (
+            <button
+              id="channel-telegram"
+              onClick={() => onChannelChange(selectedChannel === 'telegram' && connectedChannelTypes.length > 1 ? 'all' : 'telegram')}
+              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap cursor-pointer ${
+                selectedChannel === 'telegram' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
+                  ? 'bg-[#0088cc] text-white font-semibold'
+                  : darkMode
+                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
+                  : 'bg-[#e9edef] text-[#54656f]'
+              }`}
+            >
+              <TelegramIcon className="w-3 h-3" />
+              <span>Telegram</span>
+            </button>
+          )}
+
+          {connectedChannelTypes.includes('webchat') && (
+            <button
+              id="channel-webchat"
+              onClick={() => onChannelChange(selectedChannel === 'webchat' && connectedChannelTypes.length > 1 ? 'all' : 'webchat')}
+              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap cursor-pointer ${
+                selectedChannel === 'webchat' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
+                  ? 'bg-blue-600 text-white font-semibold'
+                  : darkMode
+                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
+                  : 'bg-[#e9edef] text-[#54656f]'
+              }`}
+            >
+              <Globe className="w-3 h-3" />
+              <span>Chat Site</span>
+            </button>
+          )}
+
+          {/* Botão de Adicionar (+) ao lado do canal existente */}
+          {onOpenChannels && (
+            <button
+              id="btn-add-channel-filter"
+              type="button"
+              onClick={onOpenChannels}
+              className={`p-1 rounded-full transition-all flex items-center justify-center shrink-0 cursor-pointer ${
+                darkMode
+                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#00a884] hover:bg-[#2a3942]'
+                  : 'bg-[#e9edef] text-[#54656f] hover:text-[#00a884] hover:bg-[#d1d7db]'
+              }`}
+              title="Conectar ou adicionar canal"
+              aria-label="Conectar novo canal"
+            >
+              <Plus className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Filter Chips ("Tudo", "Não lidas", "Favoritas", "Grupos", "Arquivadas") */}
       <div className="px-3 py-1.5 flex items-center gap-2 overflow-x-auto no-scrollbar">

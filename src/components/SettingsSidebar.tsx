@@ -87,7 +87,7 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
   const settingsItems = [
     {
       id: 'tenants' as SettingModalType,
-      title: 'Empresas & Clientes (Multi-Tenant)',
+      title: 'Empresas & Clientes',
       description: currentAccount ? `${currentAccount.name} • ${currentAccount.segment || 'Ativo'}` : 'Gerenciar clientes',
       icon: Building2,
       onClick: () => setActiveModal('tenants'),
