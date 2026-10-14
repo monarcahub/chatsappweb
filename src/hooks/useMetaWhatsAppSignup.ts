@@ -38,11 +38,8 @@ export function useMetaWhatsAppSignup(options?: UseMetaWhatsAppSignupOptions) {
   sessionDataRef.current = sessionData;
 
   const safeAlert = (message: string) => {
-    try {
-      window.alert(message);
-    } catch {
-      console.warn('window.alert suprimido:', message);
-    }
+    setStatusMessage(message);
+    console.info('[Meta WhatsApp]', message);
   };
 
   // 1. Carregamento do SDK JavaScript da Meta

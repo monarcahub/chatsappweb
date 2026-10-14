@@ -20,10 +20,15 @@ import {
   Send,
   Sparkles,
   Trash2,
+  Power,
+  PowerOff,
+  Check,
 } from 'lucide-react';
 import { ChannelType, Account } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useMetaWhatsAppSignup } from '../hooks/useMetaWhatsAppSignup';
+import { useEvolutionWhatsApp, sanitizeEvolutionInstanceName } from '../hooks/useEvolutionWhatsApp';
+import { EvolutionQRModal } from './EvolutionQRModal';
 import { TelegramIcon } from './TelegramIcon';
 import { supabase, isSupabaseConfigured, ensureSupabaseConfig } from '../lib/supabase';
 
@@ -41,7 +46,8 @@ interface ConnectedChannelItem {
   type: ChannelType;
   identifier: string;
   provider: string;
-  apiType?: 'meta_official' | 'monarcahub_standard';
+  apiType?: 'meta_official' | 'monarcahub_standard' | 'evolution_qr';
+  instanceName?: string;
   status: 'online' | 'syncing' | 'offline';
   latency: string;
   ai_enabled?: boolean;
@@ -115,6 +121,13 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
   const [telegramBotUsername, setTelegramBotUsername] = useState('');
   const [telegramBotToken, setTelegramBotToken] = useState('');
   const [webchatDomain, setWebchatDomain] = useState('');
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmText?: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   // Helper para resetar e fechar modal
   const resetConnectModal = () => {
@@ -151,11 +164,84 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
     },
   });
 
+  // Hook Oficial da Evolution API (WhatsApp QR Code / API Não Oficial)
+  const {
+    instanceName: evoInstanceName,
+    setInstanceName: setEvoInstanceName,
+    channelName: evoChannelName,
+    setChannelName: setEvoChannelName,
+    branchSuffix: evoBranchSuffix,
+    setBranchSuffix: setEvoBranchSuffix,
+    isQrModalOpen,
+    isLoadingQr,
+    qrCodeSrc,
+    whatsappUnofficialStatus,
+    statusMessage: evoStatusMessage,
+    actionSuccessMessage: evoActionSuccessMessage,
+    isActionLoading: isEvoActionLoading,
+    startConnectionFlow: startEvolutionConnectionFlow,
+    refreshQrCode: refreshEvolutionQrCode,
+    checkStatus: checkEvolutionStatus,
+    restartInstance: restartEvolutionInstance,
+    logoutInstance: logoutEvolutionInstance,
+    closeQrModal: closeEvolutionQrModal,
+  } = useEvolutionWhatsApp({
+    userEmail: user?.email,
+    accountId: currentAccount?.id,
+    accountName: currentAccount?.name,
+    onSuccess: () => {
+      fetchChannels();
+      resetConnectModal();
+    },
+  });
+
+  // Sanitização e cálculo automático do nome da instância Evolution WhatsApp
+  const calculatedInstanceName = useMemo(() => {
+    const base = sanitizeEvolutionInstanceName(user?.email || 'instancia');
+    const cleanPhoneDigits = newChannelPhone.replace(/\D/g, '');
+    const hasExistingSameInstance = channels.some(
+      (c) => c.instanceName === base || c.identifier?.includes(base)
+    );
+    if (hasExistingSameInstance && cleanPhoneDigits) {
+      return `${base}_${cleanPhoneDigits.slice(-4)}`;
+    }
+    return base;
+  }, [user?.email, newChannelPhone, channels]);
+
+  const handleConnectWithQrCode = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newChannelName.trim()) return;
+
+    let phoneToSave = newChannelPhone.trim();
+    if (phoneToSave && !phoneToSave.startsWith('+')) {
+      phoneToSave = `${selectedCountry.ddi} ${phoneToSave}`;
+    }
+
+    const channelNameToConnect = newChannelName.trim();
+    const instanceToConnect = calculatedInstanceName;
+
+    // Fecha o modal de configuração de plataforma e inicia o fluxo de QR Code
+    resetConnectModal();
+
+    // Dispara fluxo Evolution QR Code
+    startEvolutionConnectionFlow(instanceToConnect, channelNameToConnect, phoneToSave);
+  };
+
   const mapChannelRow = (ch: any): ConnectedChannelItem => {
-    const apiType = ch.config?.api_type || 'meta_official';
+    const rawApiType = ch.config?.api_type;
+    const instanceName = ch.config?.instance_name || ch.config?.instanceName;
+    const apiType: 'meta_official' | 'monarcahub_standard' | 'evolution_qr' =
+      rawApiType === 'meta_official'
+        ? 'meta_official'
+        : rawApiType === 'evolution_qr' || instanceName || rawApiType === 'monarcahub_standard'
+        ? 'evolution_qr'
+        : 'meta_official';
+
     const identifier =
       ch.type === 'whatsapp'
-        ? ch.config?.waba_phone || ch.config?.phone || currentAccount?.whatsappPhone || 'Ativo'
+        ? instanceName
+          ? `Instância: ${instanceName}`
+          : ch.config?.waba_phone || ch.config?.phone || currentAccount?.whatsappPhone || 'Ativo'
         : ch.type === 'instagram'
         ? ch.config?.username || `@${ch.name.toLowerCase().replace(/\s+/g, '')}`
         : ch.type === 'telegram'
@@ -164,7 +250,9 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
 
     const provider =
       ch.type === 'whatsapp'
-        ? (apiType === 'monarcahub_standard' ? 'Api Padrão MonarcaHub' : 'Api Oficial Meta Business')
+        ? apiType === 'meta_official'
+          ? 'Api Oficial Meta Business'
+          : 'Evolution API (QR Code)'
         : ch.type === 'instagram'
         ? 'Instagram Direct'
         : ch.type === 'telegram'
@@ -178,8 +266,9 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
       identifier,
       provider,
       apiType: ch.type === 'whatsapp' ? apiType : undefined,
+      instanceName,
       status: ch.is_active ? 'online' : 'offline',
-      latency: '32ms',
+      latency: '28ms',
       ai_enabled: ch.config?.ai_enabled !== false,
     };
   };
@@ -288,33 +377,38 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
     }
   };
 
-  const handleDeleteChannel = async (channelId: string, channelName: string) => {
-    if (!window.confirm(`Deseja realmente desconectar o canal "${channelName}"?`)) {
-      return;
-    }
+  const handleDeleteChannel = (channelId: string, channelName: string) => {
+    setConfirmModal({
+      isOpen: true,
+      title: 'Desconectar Canal',
+      message: `Deseja realmente desconectar o canal "${channelName}"? Os atendimentos vinculados continuarão no histórico.`,
+      confirmText: 'Desconectar',
+      onConfirm: async () => {
+        setConfirmModal(null);
+        try {
+          await ensureSupabaseConfig();
+          let deleted = false;
 
-    try {
-      await ensureSupabaseConfig();
-      let deleted = false;
+          if (isSupabaseConfigured) {
+            const { error } = await supabase
+              .from('channels')
+              .delete()
+              .eq('id', channelId);
+            if (!error) deleted = true;
+          }
 
-      if (isSupabaseConfigured) {
-        const { error } = await supabase
-          .from('channels')
-          .delete()
-          .eq('id', channelId);
-        if (!error) deleted = true;
-      }
+          if (!deleted) {
+            await fetch(`/api/channels/${channelId}?account_id=${currentAccount?.id}`, {
+              method: 'DELETE',
+            });
+          }
 
-      if (!deleted) {
-        await fetch(`/api/channels/${channelId}?account_id=${currentAccount?.id}`, {
-          method: 'DELETE',
-        });
-      }
-
-      setChannels((prev) => prev.filter((c) => c.id !== channelId));
-    } catch (err) {
-      console.warn('Erro ao excluir canal:', err);
-    }
+          setChannels((prev) => prev.filter((c) => c.id !== channelId));
+        } catch (err) {
+          console.warn('Erro ao excluir canal:', err);
+        }
+      },
+    });
   };
 
   // Carrega canais e escuta alterações em tempo real no Supabase
@@ -594,9 +688,13 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                       <h3 className={`font-bold text-xs truncate ${darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'}`}>
                         {channel.name}
                       </h3>
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#064e3b] text-[#34d399] border border-[#34d399]/30 flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-[#34d399]" />
-                        Online
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 ${
+                        channel.status === 'online'
+                          ? 'bg-[#064e3b] text-[#34d399] border border-[#34d399]/30'
+                          : 'bg-gray-800 text-gray-400 border border-gray-700'
+                      }`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${channel.status === 'online' ? 'bg-[#34d399] animate-pulse' : 'bg-gray-500'}`} />
+                        {channel.status === 'online' ? 'Online' : 'Desconectado'}
                       </span>
                     </div>
 
@@ -612,14 +710,82 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                             <ShieldCheck className="w-3 h-3" /> Mais Segura
                           </span>
                         )}
-                        {channel.type === 'whatsapp' && channel.apiType === 'monarcahub_standard' && (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                            Padrão MonarcaHub
+                        {channel.type === 'whatsapp' && (channel.apiType === 'evolution_qr' || channel.apiType === 'monarcahub_standard') && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#00a884]/15 text-[#00a884] border border-[#00a884]/30">
+                            <QrCode className="w-3 h-3" /> Evolution QR
                           </span>
                         )}
                       </div>
                       <span>Latência: {channel.latency}</span>
                     </div>
+
+                    {/* Botões de Gerenciamento da Conexão Evolution API (Conectado / Online) */}
+                    {channel.type === 'whatsapp' && (channel.apiType === 'evolution_qr' || channel.apiType === 'monarcahub_standard' || channel.instanceName) && (
+                      <div className="mt-2 pt-2 border-t border-gray-700/20 flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => checkEvolutionStatus(channel.instanceName)}
+                          disabled={isEvoActionLoading}
+                          className={`px-2 py-1 rounded-md text-[10px] font-semibold flex items-center gap-1 border transition-colors cursor-pointer ${
+                            darkMode
+                              ? 'bg-[#182229] border-[#313d45] hover:bg-[#253238] text-gray-200'
+                              : 'bg-white border-gray-200 hover:bg-gray-100 text-gray-700'
+                          }`}
+                          title="Verificar status da conexão (action: status)"
+                        >
+                          <Radio className="w-3 h-3 text-emerald-400" />
+                          <span>Verificar Conexão</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => restartEvolutionInstance(channel.instanceName)}
+                          disabled={isEvoActionLoading}
+                          className={`px-2 py-1 rounded-md text-[10px] font-semibold flex items-center gap-1 border transition-colors cursor-pointer ${
+                            darkMode
+                              ? 'bg-[#182229] border-[#313d45] hover:bg-[#253238] text-gray-200'
+                              : 'bg-white border-gray-200 hover:bg-gray-100 text-gray-700'
+                          }`}
+                          title="Reiniciar a instância do WhatsApp (action: restart)"
+                        >
+                          <RefreshCw className={`w-3 h-3 text-cyan-400 ${isEvoActionLoading ? 'animate-spin' : ''}`} />
+                          <span>Reiniciar</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setConfirmModal({
+                              isOpen: true,
+                              title: 'Desconectar WhatsApp',
+                              message: `Deseja realmente desconectar o WhatsApp da instância "${channel.instanceName || channel.name}"? Será necessário escanear o QR Code novamente para reconectar.`,
+                              confirmText: 'Desconectar Instância',
+                              onConfirm: () => {
+                                setConfirmModal(null);
+                                logoutEvolutionInstance(channel.instanceName);
+                              },
+                            });
+                          }}
+                          disabled={isEvoActionLoading}
+                          className="px-2 py-1 rounded-md text-[10px] font-semibold flex items-center gap-1 border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors cursor-pointer"
+                          title="Desconectar instância do WhatsApp (action: logout)"
+                        >
+                          <PowerOff className="w-3 h-3" />
+                          <span>Desconectar</span>
+                        </button>
+
+                        {channel.status !== 'online' && (
+                          <button
+                            type="button"
+                            onClick={() => startEvolutionConnectionFlow(channel.instanceName, channel.name)}
+                            className="px-2 py-1 rounded-md text-[10px] font-semibold flex items-center gap-1 bg-[#00a884] hover:bg-[#009374] text-white transition-colors cursor-pointer ml-auto"
+                          >
+                            <QrCode className="w-3 h-3" />
+                            <span>Escanear QR</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
 
                     <div className="mt-2.5 pt-2 border-t border-gray-700/20 flex items-center justify-between gap-2">
                       <div className="flex items-center gap-1.5">
@@ -1536,7 +1702,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                   </button>
                 </div>
 
-                <form onSubmit={handleCreateChannel} className="space-y-4">
+                <form onSubmit={handleConnectWithQrCode} className="space-y-4">
                   <div>
                     <label className="block text-xs font-semibold text-[#8696a0] mb-1">
                       Nome do Canal / Departamento
@@ -1610,14 +1776,23 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                   </div>
 
                   <div
-                    className={`p-3 rounded-xl border text-xs flex items-center gap-2.5 ${
+                    className={`p-3 rounded-xl border text-xs space-y-1.5 ${
                       darkMode ? 'bg-[#111b21] border-[#313d45] text-[#8696a0]' : 'bg-emerald-50 border-emerald-200 text-emerald-900'
                     }`}
                   >
-                    <QrCode className="w-5 h-5 text-[#00a884] shrink-0" />
-                    <span>
-                      Canal com API Padrão selecionado. Após salvar, o canal será adicionado ao workspace e ficará pronto para leitura de QR Code.
-                    </span>
+                    <div className="flex items-center gap-2 font-semibold text-[#00a884]">
+                      <QrCode className="w-4 h-4 shrink-0" />
+                      <span>Conexão Imediata por QR Code</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed">
+                      Ao clicar em <strong>Conectar com QR Code</strong>, a instância será criada no servidor e o QR Code será exibido para leitura no seu celular.
+                    </p>
+                    <div className="pt-1 flex items-center gap-1.5 text-[10px] font-mono opacity-85">
+                      <span>Instância gerada:</span>
+                      <span className="font-bold text-[#00a884] bg-[#00a884]/10 px-1.5 py-0.5 rounded">
+                        {calculatedInstanceName}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="flex gap-2 pt-2">
@@ -1630,10 +1805,11 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                     </button>
                     <button
                       type="submit"
-                      disabled={isSaving}
-                      className="flex-1 py-2.5 rounded-xl text-xs font-semibold bg-[#00a884] hover:bg-[#009374] text-white disabled:opacity-50 cursor-pointer shadow-md transition-colors"
+                      disabled={isEvoActionLoading}
+                      className="flex-1 py-2.5 rounded-xl text-xs font-semibold bg-[#00a884] hover:bg-[#009374] text-white disabled:opacity-50 cursor-pointer shadow-md transition-colors flex items-center justify-center gap-2"
                     >
-                      {isSaving ? 'Salvando...' : 'Salvar Canal WhatsApp'}
+                      <QrCode className="w-4 h-4" />
+                      <span>{isEvoActionLoading ? 'Gerando QR Code...' : 'Conectar com QR Code'}</span>
                     </button>
                   </div>
                 </form>
@@ -1642,6 +1818,61 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
           </div>
         </div>
       )}
+
+      {/* Modal de Confirmação In-App (Seguro para iframes e navegadores restritos) */}
+      {confirmModal && confirmModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className={`w-full max-w-sm rounded-2xl p-5 border shadow-2xl space-y-4 ${
+              darkMode ? 'bg-[#202c33] border-[#313d45] text-[#e9edef]' : 'bg-white border-[#e9edef] text-[#111b21]'
+            }`}
+          >
+            <div className="flex items-start justify-between">
+              <h4 className="font-bold text-sm">{confirmModal.title}</h4>
+              <button
+                type="button"
+                onClick={() => setConfirmModal(null)}
+                className="p-1 rounded-lg text-[#8696a0] hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-[#8696a0] leading-relaxed">
+              {confirmModal.message}
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setConfirmModal(null)}
+                className="px-3 py-1.5 rounded-xl text-xs font-semibold border border-gray-600/40 hover:bg-gray-500/10 cursor-pointer transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={confirmModal.onConfirm}
+                className="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white cursor-pointer shadow-md transition-colors"
+              >
+                {confirmModal.confirmText || 'Confirmar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Oficial de Conexão WhatsApp via Evolution API (QR Code) */}
+      <EvolutionQRModal
+        isOpen={isQrModalOpen}
+        onClose={closeEvolutionQrModal}
+        isLoading={isLoadingQr}
+        qrCodeSrc={qrCodeSrc}
+        status={whatsappUnofficialStatus}
+        statusMessage={evoStatusMessage}
+        instanceName={evoInstanceName}
+        channelName={evoChannelName}
+        onRefreshQr={refreshEvolutionQrCode}
+        darkMode={darkMode}
+      />
     </div>
   );
 };

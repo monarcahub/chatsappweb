@@ -505,6 +505,37 @@ app.post('/api/channels', async (req, res) => {
   }
 });
 
+// Proxy para o gerenciador da Evolution API (suporta ações: create, qr, status, restart, logout)
+app.post('/api/evolution/action', async (req, res) => {
+  try {
+    const { action, instanceName, instance } = req.body;
+    if (!action || !instanceName) {
+      return res.status(400).json({ error: 'action e instanceName são obrigatórios' });
+    }
+
+    const response = await fetch('https://webhook.monarcahub.com/webhook/evo-manager-v4all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action,
+        instanceName,
+        instance: instance || { state: action },
+      }),
+    });
+
+    const text = await response.text();
+    try {
+      const data = JSON.parse(text);
+      res.status(response.status).json(data);
+    } catch {
+      res.status(response.status).send(text);
+    }
+  } catch (err: any) {
+    console.error('Erro no proxy da Evolution:', err);
+    res.status(500).json({ error: err?.message || 'Erro ao comunicar com Evolution API' });
+  }
+});
+
 // Listar mensagens de uma conversa com garantia de service_role e ordenação
 app.get('/api/messages', async (req, res) => {
   if (!supabaseAdmin) {
