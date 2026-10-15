@@ -464,6 +464,81 @@ app.delete('/api/channels/:id', async (req, res) => {
   }
 });
 
+// Atualizar dados/nome do canal da empresa (tabela channels)
+app.patch('/api/channels/:id', async (req, res) => {
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'Supabase admin não configurado' });
+  }
+
+  try {
+    const channelId = req.params.id;
+    const { name } = req.body;
+
+    if (!channelId) {
+      return res.status(400).json({ error: 'ID do canal é obrigatório' });
+    }
+
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: 'O nome do canal não pode ser vazio' });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('channels')
+      .update({
+        name: name.trim(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', channelId)
+      .select()
+      .maybeSingle();
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    res.json({ success: true, message: 'Canal atualizado com sucesso', channel: data });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Erro ao atualizar canal' });
+  }
+});
+
+app.put('/api/channels/:id', async (req, res) => {
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'Supabase admin não configurado' });
+  }
+
+  try {
+    const channelId = req.params.id;
+    const { name } = req.body;
+
+    if (!channelId) {
+      return res.status(400).json({ error: 'ID do canal é obrigatório' });
+    }
+
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return res.status(400).json({ error: 'O nome do canal não pode ser vazio' });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('channels')
+      .update({
+        name: name.trim(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', channelId)
+      .select()
+      .maybeSingle();
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    res.json({ success: true, message: 'Canal atualizado com sucesso', channel: data });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Erro ao atualizar canal' });
+  }
+});
+
 // Conectar novo canal para a empresa
 app.post('/api/channels', async (req, res) => {
   if (!supabaseAdmin) {

@@ -23,6 +23,8 @@ import {
   Power,
   PowerOff,
   Check,
+  Pencil,
+  AlertCircle,
 } from 'lucide-react';
 import { ChannelType, Account } from '../types';
 import { useAuth } from '../context/AuthContext';
@@ -128,6 +130,19 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
     confirmText?: string;
     onConfirm: () => void;
   } | null>(null);
+
+  // Estados para edição do nome do canal na tabela channels do Supabase
+  const [editingChannel, setEditingChannel] = useState<ConnectedChannelItem | null>(null);
+  const [editingName, setEditingName] = useState('');
+  const [isSavingName, setIsSavingName] = useState(false);
+  const [editNameError, setEditNameError] = useState<string | null>(null);
+  const [successToast, setSuccessToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!successToast) return;
+    const timer = setTimeout(() => setSuccessToast(null), 3500);
+    return () => clearTimeout(timer);
+  }, [successToast]);
 
   // Helper para resetar e fechar modal
   const resetConnectModal = () => {
@@ -411,6 +426,92 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
     });
   };
 
+  const handleOpenEditChannelModal = (channel: ConnectedChannelItem) => {
+    setEditingChannel(channel);
+    setEditingName(channel.name);
+    setEditNameError(null);
+  };
+
+  const handleCloseEditChannelModal = () => {
+    if (isSavingName) return;
+    setEditingChannel(null);
+    setEditingName('');
+    setEditNameError(null);
+  };
+
+  const handleSaveChannelName = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!editingChannel) return;
+
+    const trimmed = editingName.trim();
+    if (!trimmed) {
+      setEditNameError('O nome do canal não pode ficar em branco.');
+      return;
+    }
+
+    setIsSavingName(true);
+    setEditNameError(null);
+
+    try {
+      await ensureSupabaseConfig();
+      let updated = false;
+
+      // 1. Atualizar diretamente na tabela 'channels' do Supabase
+      if (isSupabaseConfigured) {
+        const { error } = await supabase
+          .from('channels')
+          .update({
+            name: trimmed,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', editingChannel.id);
+
+        if (!error) {
+          updated = true;
+        } else {
+          console.warn('Erro ao atualizar na tabela channels do Supabase:', error);
+          if (
+            error.message?.includes('duplicate') ||
+            error.message?.includes('unique') ||
+            error.code === '23505'
+          ) {
+            throw new Error('Já existe um canal com este nome nesta empresa. Escolha outro nome.');
+          }
+        }
+      }
+
+      // 2. Fallback via backend endpoint PATCH /api/channels/:id
+      if (!updated) {
+        const res = await fetch(`/api/channels/${editingChannel.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: trimmed }),
+        });
+
+        if (res.ok) {
+          updated = true;
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || 'Erro ao persistir novo nome do canal.');
+        }
+      }
+
+      // Atualiza o estado da lista local imediatamente
+      setChannels((prev) =>
+        prev.map((c) => (c.id === editingChannel.id ? { ...c, name: trimmed } : c))
+      );
+
+      setSuccessToast(`Nome do canal atualizado para "${trimmed}" com sucesso no Supabase!`);
+      setEditingChannel(null);
+      setEditingName('');
+    } catch (err: any) {
+      console.error('Falha ao atualizar nome do canal:', err);
+      setEditNameError(err?.message || 'Erro ao salvar alterações no Supabase.');
+    } finally {
+      setIsSavingName(false);
+    }
+  };
+
   // Carrega canais e escuta alterações em tempo real no Supabase
   useEffect(() => {
     fetchChannels();
@@ -685,10 +786,20 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
 
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-1 mb-0.5">
-                      <h3 className={`font-bold text-xs truncate ${darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'}`}>
-                        {channel.name}
-                      </h3>
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 ${
+                      <div className="flex items-center gap-1.5 min-w-0 flex-1 mr-1">
+                        <h3 className={`font-bold text-xs truncate ${darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'}`} title={channel.name}>
+                          {channel.name}
+                        </h3>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditChannelModal(channel)}
+                          className="p-1 rounded text-[#8696a0] hover:text-[#00a884] hover:bg-[#00a884]/10 transition-colors cursor-pointer shrink-0"
+                          title="Editar nome do canal no Supabase"
+                        >
+                          <Pencil className="w-3 h-3" />
+                        </button>
+                      </div>
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 shrink-0 ${
                         channel.status === 'online'
                           ? 'bg-[#064e3b] text-[#34d399] border border-[#34d399]/30'
                           : 'bg-gray-800 text-gray-400 border border-gray-700'
@@ -801,6 +912,20 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                         >
                           <Brain className="w-3 h-3" />
                           <span>{channel.ai_enabled !== false ? 'IA Ativa' : 'IA Pausada'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditChannelModal(channel)}
+                          className={`px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 border transition-colors cursor-pointer ${
+                            darkMode
+                              ? 'border-[#313d45] hover:border-[#00a884] text-gray-300 hover:text-[#00a884] hover:bg-[#00a884]/10'
+                              : 'border-gray-200 hover:border-[#00a884] text-gray-700 hover:text-[#00a884] hover:bg-[#00a884]/10'
+                          }`}
+                          title="Editar nome do canal na tabela channels do Supabase"
+                        >
+                          <Pencil className="w-3 h-3 text-[#00a884]" />
+                          <span>Editar</span>
                         </button>
 
                         <button
@@ -1816,6 +1941,147 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
               </div>
             ) : null}
           </div>
+        </div>
+      )}
+
+      {/* Modal para Editar Nome do Canal (Tabela channels do Supabase) */}
+      {editingChannel && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-150">
+          <div
+            className={`w-full max-w-md rounded-2xl p-5 border shadow-2xl space-y-4 ${
+              darkMode ? 'bg-[#202c33] border-[#313d45] text-[#e9edef]' : 'bg-white border-[#e9edef] text-[#111b21]'
+            }`}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-gray-700/20">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-full bg-[#00a884]/20 text-[#00a884] flex items-center justify-center">
+                  <Pencil className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm">Editar Nome do Canal</h3>
+                  <p className="text-[11px] text-[#8696a0]">
+                    Atualização em tempo real na tabela <code className="text-[#00a884] font-mono">channels</code> do Supabase
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseEditChannelModal}
+                disabled={isSavingName}
+                className="p-1 rounded-lg text-[#8696a0] hover:text-white cursor-pointer transition-colors disabled:opacity-50"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Canal Info Badge */}
+            <div
+              className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 text-xs ${
+                darkMode ? 'bg-[#111b21] border-[#2a3942]' : 'bg-gray-50 border-gray-200'
+              }`}
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                {getChannelIcon(editingChannel.type)}
+                <div className="min-w-0">
+                  <span className="font-semibold block truncate">{editingChannel.provider}</span>
+                  <span className="text-[11px] font-mono text-[#00a884] block truncate">
+                    {editingChannel.identifier}
+                  </span>
+                </div>
+              </div>
+              <span
+                className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                  editingChannel.status === 'online'
+                    ? 'bg-[#064e3b] text-[#34d399]'
+                    : 'bg-gray-800 text-gray-400'
+                }`}
+              >
+                {editingChannel.status === 'online' ? 'Online' : 'Desconectado'}
+              </span>
+            </div>
+
+            {/* Form */}
+            <form onSubmit={handleSaveChannelName} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold mb-1.5">
+                  Nome do Canal
+                </label>
+                <input
+                  type="text"
+                  value={editingName}
+                  onChange={(e) => {
+                    setEditingName(e.target.value);
+                    if (editNameError) setEditNameError(null);
+                  }}
+                  autoFocus
+                  disabled={isSavingName}
+                  placeholder="Ex: WhatsApp Comercial, Suporte, etc."
+                  maxLength={100}
+                  className={`w-full px-3.5 py-2.5 rounded-xl border text-xs outline-none transition-all ${
+                    darkMode
+                      ? 'bg-[#111b21] border-[#313d45] focus:border-[#00a884] text-[#e9edef]'
+                      : 'bg-gray-50 border-gray-200 focus:border-[#00a884] text-[#111b21]'
+                  } disabled:opacity-60`}
+                />
+                <div className="flex items-center justify-between mt-1 text-[11px] text-[#8696a0]">
+                  <span>Este nome identifica o canal na caixa de entrada e filtros.</span>
+                  <span>{editingName.length}/100</span>
+                </div>
+              </div>
+
+              {editNameError && (
+                <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{editNameError}</span>
+                </div>
+              )}
+
+              {/* Botões */}
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-gray-700/20">
+                <button
+                  type="button"
+                  onClick={handleCloseEditChannelModal}
+                  disabled={isSavingName}
+                  className="px-3.5 py-2 rounded-xl text-xs font-semibold border border-gray-600/40 hover:bg-gray-500/10 cursor-pointer transition-colors disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingName || !editingName.trim() || editingName.trim() === editingChannel.name}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-[#00a884] hover:bg-[#009374] text-white cursor-pointer shadow-md transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isSavingName ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Salvando no Supabase...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Salvar Alterações</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Toast de Sucesso para ações em Canais */}
+      {successToast && (
+        <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2.5 px-4 py-3 rounded-xl bg-[#00a884] text-white text-xs font-semibold shadow-2xl animate-in fade-in slide-in-from-bottom-2 duration-200">
+          <CheckCircle2 className="w-4 h-4 shrink-0" />
+          <span>{successToast}</span>
+          <button
+            type="button"
+            onClick={() => setSuccessToast(null)}
+            className="ml-2 p-0.5 rounded hover:bg-black/10 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 
