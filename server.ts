@@ -881,6 +881,94 @@ app.post('/api/ai-brain/toggle-status', async (req, res) => {
 });
 
 // =========================================================================
+// ROTA DE FERRAMENTAS & CONSUMO REAL (MULTI-EMPRESA)
+// =========================================================================
+app.get('/api/tools/overview', async (req, res) => {
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'Supabase admin não configurado' });
+  }
+
+  const accountId = String(req.query.account_id || '').trim();
+  if (!accountId) {
+    return res.status(400).json({ error: 'account_id é obrigatório' });
+  }
+
+  try {
+    // 1. Mensagens reais
+    const { count: totalMessages } = await supabaseAdmin
+      .from('messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId);
+
+    const { count: aiMessages } = await supabaseAdmin
+      .from('messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId)
+      .in('sender_type', ['ai', 'bot']);
+
+    const { count: agentMessages } = await supabaseAdmin
+      .from('messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId)
+      .in('sender_type', ['agent', 'coexistence_mobile']);
+
+    const { count: customerMessages } = await supabaseAdmin
+      .from('messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId)
+      .in('sender_type', ['contact', 'customer']);
+
+    // 2. Total de conversas
+    const { count: totalConversations } = await supabaseAdmin
+      .from('conversations')
+      .select('id', { count: 'exact', head: true })
+      .eq('account_id', accountId);
+
+    // 3. Canais
+    const { data: channels } = await supabaseAdmin
+      .from('channels')
+      .select('id, is_active')
+      .eq('account_id', accountId);
+
+    const totalChannels = channels?.length || 0;
+    const activeChannels = channels?.filter((c: any) => c.is_active !== false).length || 0;
+
+    // 4. Cérebro & Usuários Extras
+    const { data: cerebro } = await supabaseAdmin
+      .from('cerebro_ia')
+      .select('extra_users_count, is_active')
+      .eq('account_id', accountId)
+      .maybeSingle();
+
+    // 5. Conta
+    const { data: account } = await supabaseAdmin
+      .from('accounts')
+      .select('id, name, plan, created_at, segment, whatsapp_phone')
+      .eq('id', accountId)
+      .maybeSingle();
+
+    res.json({
+      metrics: {
+        totalMessages: totalMessages || 0,
+        aiMessages: aiMessages || 0,
+        agentMessages: agentMessages || 0,
+        customerMessages: customerMessages || 0,
+        totalConversations: totalConversations || 0,
+        totalChannels,
+        activeChannels,
+        extraUsersCount: cerebro?.extra_users_count || 0,
+        isAIActive: cerebro?.is_active ?? true,
+        plan: account?.plan || 'pro',
+        createdAt: account?.created_at,
+        accountName: account?.name,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Erro ao carregar dados de consumo' });
+  }
+});
+
+// =========================================================================
 // PAUSAR OU ATIVAR A IA EM UM CANAL CONECTADO ESPECÍFICO
 // =========================================================================
 app.post('/api/channels/toggle-ai', async (req, res) => {

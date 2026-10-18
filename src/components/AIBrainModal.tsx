@@ -93,6 +93,7 @@ interface AIBrainModalProps {
   account?: Account | null;
   isAIActiveGlobal?: boolean;
   onToggleAIGlobal?: (newStatus: boolean) => void;
+  onOpenConnections?: () => void;
 }
 
 const INITIAL_KNOWLEDGE: KnowledgeItem[] = [
@@ -150,6 +151,7 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
   account,
   isAIActiveGlobal,
   onToggleAIGlobal,
+  onOpenConnections,
 }) => {
   const [activeTab, setActiveTab] = useState<'identity' | 'knowledge' | 'behavior'>('identity');
   const [isTogglingStatus, setIsTogglingStatus] = useState(false);
@@ -644,31 +646,25 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
                 )}
               </div>
               <p className="text-xs text-gray-400">
-                Status Geral da IA, controle por canal conectado e diretrizes de atendimento
+                Personalidade, diretrizes de atendimento e base de conhecimento da empresa
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            {/* Quick Master Toggle Switch on Header */}
-            <div className="hidden sm:flex items-center gap-2 pr-2 border-r border-gray-700/30">
-              <span className="text-[11px] font-semibold text-gray-400">Status Geral:</span>
+          <div className="flex items-center gap-2">
+            {onOpenConnections && (
               <button
                 type="button"
-                onClick={() => handleToggleAllChannels(!allChannelsActive)}
-                disabled={isTogglingStatus}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden disabled:opacity-50 ${
-                  allChannelsActive ? 'bg-[#00a884]' : hasAnyActiveChannel ? 'bg-indigo-600' : 'bg-gray-600'
-                }`}
-                title={allChannelsActive ? 'Clique para pausar a IA em todos os canais' : 'Clique para ativar a IA em todos os canais'}
+                onClick={() => {
+                  onClose();
+                  onOpenConnections();
+                }}
+                className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#00a884]/20 hover:bg-[#00a884]/30 text-[#00a884] border border-[#00a884]/30 transition-colors cursor-pointer"
               >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
-                    allChannelsActive ? 'translate-x-5' : 'translate-x-0'
-                  }`}
-                />
+                <Radio className="w-3.5 h-3.5" />
+                <span>Ver Conexões</span>
               </button>
-            </div>
+            )}
 
             <button
               onClick={onClose}
@@ -681,234 +677,42 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
           </div>
         </div>
 
-        {/* Painel Master: Status Geral da IA da Empresa & Controle por Canal */}
+        {/* Banner Informativo: Controle de Ativação e Canais Centralizado em Conexões */}
         <div
-          className={`px-5 py-4 border-b flex flex-col gap-4 transition-all shrink-0 select-none ${
-            allChannelsActive
-              ? darkMode
-                ? 'bg-gradient-to-r from-emerald-950/70 via-[#1c272d] to-emerald-950/30 border-emerald-500/40'
-                : 'bg-emerald-50/90 border-emerald-200'
-              : allChannelsPaused
-              ? darkMode
-                ? 'bg-gradient-to-r from-amber-950/70 via-[#1c272d] to-rose-950/30 border-amber-500/40'
-                : 'bg-amber-50/90 border-amber-200'
-              : darkMode
-              ? 'bg-gradient-to-r from-indigo-950/70 via-[#1c272d] to-purple-950/30 border-indigo-500/40'
-              : 'bg-indigo-50/90 border-indigo-200'
+          className={`px-5 py-3.5 border-b flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shrink-0 ${
+            darkMode
+              ? 'bg-[#182229] border-[#222e35] text-[#e9edef]'
+              : 'bg-emerald-50/80 border-emerald-200 text-emerald-950'
           }`}
         >
-          {/* Linha Superior: Status Geral Consolidado + Botão Master em Todos os Canais */}
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3.5">
-            <div className="flex items-center gap-3.5">
-              <div
-                className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 shadow-lg transition-all ${
-                  allChannelsActive
-                    ? 'bg-emerald-500 text-white shadow-emerald-500/30 ring-4 ring-emerald-500/20'
-                    : allChannelsPaused
-                    ? 'bg-amber-500 text-white shadow-amber-500/30 ring-4 ring-amber-500/20'
-                    : 'bg-indigo-500 text-white shadow-indigo-500/30 ring-4 ring-indigo-500/20'
-                }`}
-              >
-                {allChannelsActive ? (
-                  <Zap className="w-6 h-6 animate-pulse" />
-                ) : allChannelsPaused ? (
-                  <Pause className="w-6 h-6" />
-                ) : (
-                  <Sliders className="w-6 h-6" />
-                )}
-              </div>
-
-              <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span
-                    className={`text-[11px] uppercase tracking-wider font-extrabold px-2.5 py-0.5 rounded-full border shadow-xs flex items-center gap-1.5 ${
-                      allChannelsActive
-                        ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                        : allChannelsPaused
-                        ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
-                        : 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30'
-                    }`}
-                  >
-                    <span
-                      className={`w-2 h-2 rounded-full ${
-                        allChannelsActive
-                          ? 'bg-emerald-400 animate-ping'
-                          : allChannelsPaused
-                          ? 'bg-amber-400'
-                          : 'bg-indigo-400'
-                      }`}
-                    />
-                    {allChannelsActive
-                      ? 'STATUS GERAL: IA ATIVA EM TODOS OS CANAIS'
-                      : allChannelsPaused
-                      ? 'STATUS GERAL: IA PAUSADA EM TODOS OS CANAIS'
-                      : `STATUS GERAL: IA ATIVA EM ${activeChannelsCount} DE ${totalChannels} CANAIS`}
-                  </span>
-
-                  <span className="text-xs text-gray-400 font-medium">
-                    Empresa: <strong className="text-white">{account?.name || 'Matriz'}</strong>
-                  </span>
-                </div>
-
-                <p className="text-[11px] text-gray-300 mt-1 leading-snug">
-                  {allChannelsActive
-                    ? `A IA está respondendo de forma 100% autônoma em todos os canais e números de ${account?.name || 'sua empresa'}.`
-                    : allChannelsPaused
-                    ? `Atendimento 100% HUMANO em todos os canais de ${account?.name || 'sua empresa'}. Nenhuma mensagem automática será disparada.`
-                    : `Operação mista: a IA atende nos canais ativos abaixo, enquanto os canais pausados estão sob atendimento 100% humano.`}
-                </p>
-              </div>
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-[#00a884]/20 text-[#00a884] flex items-center justify-center shrink-0">
+              <Radio className="w-4 h-4" />
             </div>
-
-            {/* Botão Master de 1 Clique para Todos os Canais da Empresa */}
-            <div className="flex items-center gap-2 self-end sm:self-center shrink-0 w-full sm:w-auto">
-              <button
-                type="button"
-                onClick={() => handleToggleAllChannels(!hasAnyActiveChannel)}
-                disabled={isTogglingStatus}
-                className={`w-full sm:w-auto px-5 py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-md cursor-pointer disabled:opacity-50 ${
-                  hasAnyActiveChannel
-                    ? 'bg-amber-600 hover:bg-amber-700 text-white shadow-amber-900/30'
-                    : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-900/30 ring-2 ring-emerald-400/40'
-                }`}
-              >
-                {hasAnyActiveChannel ? <Pause className="w-4 h-4" /> : <Power className="w-4 h-4" />}
-                <span>
-                  {isTogglingStatus
-                    ? 'Salvando...'
-                    : hasAnyActiveChannel
-                    ? 'Pausar IA em Todos os Canais'
-                    : 'Ativar IA em Todos os Canais'}
-                </span>
-              </button>
+            <div>
+              <h4 className="font-bold text-xs">
+                Controle de Canais e Ativação Centralizado em Conexões
+              </h4>
+              <p className="text-[11px] text-gray-400 leading-snug">
+                A ativação geral da IA e o controle por canal conectado foram centralizados na aba{' '}
+                <strong className="text-[#00a884]">Conexões</strong>.
+                Aqui no Cérebro, configure as instruções, regras de atendimento e base de conhecimento.
+              </p>
             </div>
           </div>
 
-          {/* Linha Inferior: Controle de IA por Canal Conectado Individual */}
-          <div
-            className={`p-3 rounded-xl border ${
-              darkMode ? 'bg-black/30 border-gray-700/50' : 'bg-white/80 border-gray-200'
-            }`}
-          >
-            <div className="flex items-center justify-between mb-2.5">
-              <div className="flex items-center gap-2">
-                <Radio className="w-4 h-4 text-[#00a884]" />
-                <span className="font-bold text-xs">Pausar ou Ativar a IA por Canal Conectado</span>
-                <span className="text-[11px] text-gray-400 hidden sm:inline">
-                  (Controle granular por número ou instância)
-                </span>
-              </div>
-              <span className="text-[11px] font-semibold text-gray-400">
-                {activeChannelsCount} de {totalChannels} canais ativos
-              </span>
-            </div>
-
-            {isLoadingChannels ? (
-              <div className="py-4 text-center text-xs text-gray-400 flex items-center justify-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-[#00a884] animate-ping" />
-                <span>Carregando canais conectados da empresa...</span>
-              </div>
-            ) : channels.length === 0 ? (
-              <div className="py-3 px-4 rounded-lg bg-black/20 text-xs text-gray-300 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
-                <div>
-                  <span className="font-semibold text-white">Canal Principal: WhatsApp ({account?.whatsappPhone || 'Configurado'})</span>
-                  <p className="text-[11px] text-gray-400 mt-0.5">
-                    Este canal segue diretamente o <strong>Status Geral da IA</strong> da empresa. Conecte novos canais na aba "Canais" para gerenciá-los individualmente aqui.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleToggleAllChannels(!allChannelsActive)}
-                  disabled={isTogglingStatus}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all shrink-0 cursor-pointer ${
-                    allChannelsActive
-                      ? 'bg-amber-600/20 text-amber-300 border border-amber-500/40 hover:bg-amber-600 hover:text-white'
-                      : 'bg-emerald-600/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600 hover:text-white'
-                  }`}
-                >
-                  {allChannelsActive ? 'Pausar IA neste Canal' : 'Ativar IA neste Canal'}
-                </button>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                {channels.map((ch) => {
-                  const isChToggling = togglingChannelId === ch.id;
-                  return (
-                    <div
-                      key={ch.id}
-                      className={`p-3 rounded-xl border flex flex-col justify-between gap-2.5 transition-all ${
-                        ch.ai_enabled
-                          ? darkMode
-                            ? 'bg-[#111b21] border-emerald-500/40 shadow-xs'
-                            : 'bg-white border-emerald-300 shadow-xs'
-                          : darkMode
-                          ? 'bg-[#111b21]/70 border-gray-700/60 opacity-80'
-                          : 'bg-gray-50 border-gray-200 opacity-85'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <div className="p-1.5 rounded-lg bg-black/20 shrink-0">
-                            {getChannelTypeIcon(ch.type)}
-                          </div>
-                          <div className="min-w-0">
-                            <h4 className="font-bold text-xs truncate" title={ch.name}>
-                              {ch.name}
-                            </h4>
-                            <span className="text-[10px] text-gray-400 font-mono block truncate">
-                              {ch.identifier}
-                            </span>
-                          </div>
-                        </div>
-
-                        <span
-                          className={`px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0 ${
-                            ch.is_active
-                              ? 'bg-emerald-500/20 text-emerald-400'
-                              : 'bg-gray-500/20 text-gray-400'
-                          }`}
-                        >
-                          {ch.is_active ? 'Online' : 'Offline'}
-                        </span>
-                      </div>
-
-                      <div className="pt-2 border-t border-gray-700/20 flex items-center justify-between gap-2">
-                        <span
-                          className={`text-[10px] font-bold flex items-center gap-1 ${
-                            ch.ai_enabled ? 'text-emerald-400' : 'text-amber-400'
-                          }`}
-                        >
-                          <span
-                            className={`w-1.5 h-1.5 rounded-full ${
-                              ch.ai_enabled ? 'bg-emerald-400' : 'bg-amber-400'
-                            }`}
-                          />
-                          {ch.ai_enabled ? 'IA Ativa' : 'IA Pausada'}
-                        </span>
-
-                        <button
-                          type="button"
-                          onClick={() => handleToggleSingleChannel(ch.id, ch.ai_enabled)}
-                          disabled={isChToggling || isTogglingStatus}
-                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all cursor-pointer disabled:opacity-50 ${
-                            ch.ai_enabled
-                              ? 'bg-amber-500/15 text-amber-300 hover:bg-amber-600 hover:text-white border border-amber-500/30'
-                              : 'bg-emerald-500/15 text-emerald-300 hover:bg-emerald-600 hover:text-white border border-emerald-500/30'
-                          }`}
-                        >
-                          {isChToggling
-                            ? '...'
-                            : ch.ai_enabled
-                            ? 'Pausar IA'
-                            : 'Ativar IA'}
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          {onOpenConnections && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onOpenConnections();
+              }}
+              className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-[#00a884] hover:bg-[#02906f] text-white shrink-0 cursor-pointer shadow-xs transition-colors"
+            >
+              Gerenciar Conexões
+            </button>
+          )}
         </div>
 
 

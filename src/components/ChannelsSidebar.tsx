@@ -40,6 +40,8 @@ interface ChannelsSidebarProps {
   onFilterByChannel: (channel: ChannelType | 'all') => void;
   currentChannelFilter: ChannelType | 'all';
   currentAccount?: Account | null;
+  isAIActiveGlobal?: boolean;
+  onToggleAIGlobal?: (newStatus: boolean) => void;
 }
 
 interface ConnectedChannelItem {
@@ -61,6 +63,8 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
   onFilterByChannel,
   currentChannelFilter,
   currentAccount,
+  isAIActiveGlobal = true,
+  onToggleAIGlobal,
 }) => {
   const { user, availableAccounts } = useAuth();
   const [channels, setChannels] = useState<ConnectedChannelItem[]>([]);
@@ -137,6 +141,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
   const [isSavingName, setIsSavingName] = useState(false);
   const [editNameError, setEditNameError] = useState<string | null>(null);
   const [successToast, setSuccessToast] = useState<string | null>(null);
+  const [isTogglingGlobalAI, setIsTogglingGlobalAI] = useState(false);
 
   useEffect(() => {
     if (!successToast) return;
@@ -389,6 +394,64 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
       );
     } catch (err) {
       console.warn('Erro ao alternar IA do canal:', err);
+    }
+  };
+
+  // Ativar ou pausar a IA globalmente para TODOS os canais da empresa selecionada
+  const handleToggleCompanyAIGlobal = async (newStatus: boolean) => {
+    if (!currentAccount?.id) return;
+    setIsTogglingGlobalAI(true);
+    try {
+      await ensureSupabaseConfig();
+
+      if (isSupabaseConfigured) {
+        // 1. Atualizar cerebro_ia
+        await supabase
+          .from('cerebro_ia')
+          .upsert(
+            {
+              account_id: currentAccount.id,
+              is_active: newStatus,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'account_id' }
+          );
+
+        // 2. Atualizar todos os canais da empresa
+        for (const ch of channels) {
+          const { data: existingCh } = await supabase
+            .from('channels')
+            .select('config')
+            .eq('id', ch.id)
+            .single();
+          const currentCfg = existingCh?.config || {};
+          await supabase
+            .from('channels')
+            .update({
+              config: { ...currentCfg, ai_enabled: newStatus },
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', ch.id);
+        }
+      }
+
+      // Notificar callback global do App
+      if (onToggleAIGlobal) {
+        onToggleAIGlobal(newStatus);
+      }
+
+      // Atualizar lista local de canais
+      setChannels((prev) => prev.map((ch) => ({ ...ch, ai_enabled: newStatus })));
+
+      setSuccessToast(
+        newStatus
+          ? `🚀 Automação ativada em todos os canais de ${currentAccount.name}!`
+          : `⏸️ Automação pausada em todos os canais de ${currentAccount.name} (Atendimento 100% Humano)!`
+      );
+    } catch (err: any) {
+      console.warn('Erro ao alternar IA global da empresa:', err);
+    } finally {
+      setIsTogglingGlobalAI(false);
     }
   };
 
@@ -700,11 +763,11 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
           </button>
           <div>
             <h1 className={`font-bold text-base ${darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'}`}>
-              Canais Conectados
+              Conexões
             </h1>
             <span className="text-[11px] text-[#00a884] font-semibold flex items-center gap-1">
               <span className="w-2 h-2 rounded-full bg-[#25d366] animate-pulse" />
-              {channels.length} {channels.length === 1 ? 'Canal Ativo' : 'Canais Ativos'}
+              {channels.length} {channels.length === 1 ? 'Canal Ativo' : 'Canais Ativos'} • {currentAccount?.name}
             </span>
           </div>
         </div>
@@ -718,12 +781,79 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
           className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#00a884] hover:bg-[#02906f] text-white flex items-center gap-1 transition-colors cursor-pointer"
         >
           <Plus className="w-3.5 h-3.5" />
-          <span>Conectar Canais</span>
+          <span>Conectar Canal</span>
         </button>
       </div>
 
       {/* Main List */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+      <div className="flex-1 overflow-y-auto p-3 space-y-3 pb-24">
+        {/* Card Master de Controle da IA da Empresa */}
+        <div
+          className={`p-3.5 rounded-2xl border shadow-sm transition-all ${
+            isAIActiveGlobal
+              ? darkMode
+                ? 'bg-gradient-to-r from-[#182229] to-[#1f2c34] border-[#00a884]/40'
+                : 'bg-emerald-50/80 border-emerald-300'
+              : darkMode
+              ? 'bg-[#182229] border-amber-500/40'
+              : 'bg-amber-50/80 border-amber-300'
+          }`}
+        >
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <div className="flex items-center gap-2">
+              <Brain
+                className={`w-4 h-4 ${
+                  isAIActiveGlobal ? 'text-[#00a884]' : 'text-amber-500'
+                }`}
+              />
+              <span className="font-bold text-xs">
+                Status Geral da IA ({currentAccount?.name || 'Empresa'})
+              </span>
+            </div>
+
+            <span
+              className={`px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 ${
+                isAIActiveGlobal
+                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                  : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  isAIActiveGlobal ? 'bg-[#25d366] animate-pulse' : 'bg-amber-500'
+                }`}
+              />
+              {isAIActiveGlobal ? 'IA ATIVA' : 'IA PAUSADA'}
+            </span>
+          </div>
+
+          <p className="text-[11px] text-[#8696a0] leading-relaxed mb-3">
+            {isAIActiveGlobal
+              ? 'A Inteligência Artificial atende automaticamente nos canais ativados abaixo. Respostas rápidas e suporte autônomo ativos.'
+              : 'Atendimento 100% HUMANO em todos os canais da empresa. Nenhuma mensagem automática será disparada enquanto estiver pausada.'}
+          </p>
+
+          <button
+            type="button"
+            disabled={isTogglingGlobalAI}
+            onClick={() => handleToggleCompanyAIGlobal(!isAIActiveGlobal)}
+            className={`w-full py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs disabled:opacity-50 ${
+              isAIActiveGlobal
+                ? 'bg-amber-600/20 text-amber-300 border border-amber-500/40 hover:bg-amber-600 hover:text-white'
+                : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-900/30'
+            }`}
+          >
+            {isAIActiveGlobal ? <PowerOff className="w-3.5 h-3.5" /> : <Power className="w-3.5 h-3.5" />}
+            <span>
+              {isTogglingGlobalAI
+                ? 'Salvando no Supabase...'
+                : isAIActiveGlobal
+                ? 'Pausar IA Geral (Atendimento 100% Humano)'
+                : 'Ativar IA Geral em Todos os Canais'}
+            </span>
+          </button>
+        </div>
+
         <div
           className={`p-3 rounded-xl border text-xs leading-relaxed ${
             darkMode ? 'bg-[#182229] border-[#222e35] text-[#8696a0]' : 'bg-emerald-50/60 border-emerald-200 text-emerald-950'

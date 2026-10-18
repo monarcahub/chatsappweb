@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MessageSquare, Bell, X, ExternalLink, Instagram, Globe } from 'lucide-react';
-import { LeftNavRail } from './components/LeftNavRail';
+import { LeftNavRail, NavRailTab } from './components/LeftNavRail';
 import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
 import { RightPanel } from './components/RightPanel';
@@ -10,6 +10,8 @@ import { CallsNoticeModal } from './components/CallsNoticeModal';
 import { StatusSidebar } from './components/StatusSidebar';
 import { ChannelsSidebar } from './components/ChannelsSidebar';
 import { AIBrainModal } from './components/AIBrainModal';
+import { ToolsView } from './components/ToolsView';
+import { BottomNavBar } from './components/BottomNavBar';
 import { SettingsSidebar } from './components/SettingsSidebar';
 import { ProfileScreen } from './components/ProfileScreen';
 import { AppLockModal } from './components/AppLockModal';
@@ -99,7 +101,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedFilter, setSelectedFilter] = useState<'all' | 'unread' | 'favorites' | 'groups'>('all');
-  const [activeRailTab, setActiveRailTab] = useState<'chats' | 'status' | 'channels' | 'settings'>('chats');
+  const [activeRailTab, setActiveRailTab] = useState<NavRailTab>('chats');
   const [selectedChannel, setSelectedChannel] = useState<'all' | ChannelType>('all');
   const [isRightPanelOpen, setIsRightPanelOpen] = useState(false);
   const [isMobileMode, setIsMobileMode] = useState(false);
@@ -514,11 +516,17 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
             <LeftNavRail
               activeTab={activeRailTab}
               onSelectTab={(tab) => {
+                if (tab === 'brain') {
+                  setIsAIBrainOpen(true);
+                }
                 setActiveRailTab(tab);
               }}
               unreadChatsCount={totalUnreadCount}
               onOpenCallsNotice={() => setIsCallsNoticeOpen(true)}
-              onOpenAIBrain={() => setIsAIBrainOpen(true)}
+              onOpenAIBrain={() => {
+                setIsAIBrainOpen(true);
+                setActiveRailTab('brain');
+              }}
               isAIActive={isAIActiveGlobal}
               onToggleCRM={handleToggleCRM}
               isCRMOpen={isRightPanelOpen}
@@ -531,7 +539,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
           </div>
         )}
 
-        {/* Left Sidebar: Conversations list / Status / Channels */}
+        {/* Left Sidebar: Conversations list / Conexões / Ferramentas / Settings */}
         <div
           className={`${
             selectedId ? (isMobile ? 'hidden' : 'hidden md:flex') : 'flex'
@@ -542,7 +550,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               darkMode={darkMode}
               onBackToChats={() => setActiveRailTab('chats')}
             />
-          ) : activeRailTab === 'channels' ? (
+          ) : activeRailTab === 'connections' || activeRailTab === 'channels' ? (
             <ChannelsSidebar
               darkMode={darkMode}
               onBackToChats={() => {
@@ -552,6 +560,16 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               onFilterByChannel={(ch) => setSelectedChannel(ch)}
               currentChannelFilter={selectedChannel}
               currentAccount={currentAccount}
+              isAIActiveGlobal={isAIActiveGlobal}
+              onToggleAIGlobal={handleToggleAIGlobal}
+            />
+          ) : activeRailTab === 'tools' ? (
+            <ToolsView
+              darkMode={darkMode}
+              onBackToChats={() => setActiveRailTab('chats')}
+              currentAccount={currentAccount}
+              onOpenChannels={() => setActiveRailTab('connections')}
+              onOpenProfile={() => setIsProfileOpen(true)}
             />
           ) : activeRailTab === 'settings' ? (
             <SettingsSidebar
@@ -594,7 +612,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
                 setActiveRailTab((activeRailTab as string) === 'settings' ? 'chats' : 'settings')
               }
               isSettingsOpen={(activeRailTab as string) === 'settings'}
-              onOpenChannels={() => setActiveRailTab('channels')}
+              onOpenChannels={() => setActiveRailTab('connections')}
               onOpenProfile={() => setIsProfileOpen(true)}
               onOpenCRM={handleToggleCRM}
               onMarkAllAsRead={markAllAsRead}
@@ -721,11 +739,20 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
       {/* AI Brain & Knowledge Base Modal */}
       <AIBrainModal
         isOpen={isAIBrainOpen}
-        onClose={() => setIsAIBrainOpen(false)}
+        onClose={() => {
+          setIsAIBrainOpen(false);
+          if (activeRailTab === 'brain') {
+            setActiveRailTab('chats');
+          }
+        }}
         darkMode={darkMode}
         account={currentAccount}
         isAIActiveGlobal={isAIActiveGlobal}
         onToggleAIGlobal={handleToggleAIGlobal}
+        onOpenConnections={() => {
+          setIsAIBrainOpen(false);
+          setActiveRailTab('connections');
+        }}
       />
 
       {/* WhatsApp Business Profile Screen (Screenshot Replica) */}
@@ -818,9 +845,36 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
         </div>
       )}
 
+      {/* Mobile Fixed Bottom Navigation Bar (WhatsApp Business Style com 4 Destinos) */}
+      {isMobile && !selectedId && (
+        <BottomNavBar
+          activeTab={
+            activeRailTab === 'connections' || activeRailTab === 'channels'
+              ? 'connections'
+              : activeRailTab === 'brain'
+              ? 'brain'
+              : activeRailTab === 'tools'
+              ? 'tools'
+              : 'chats'
+          }
+          onSelectTab={(tab) => {
+            if (tab === 'brain') {
+              setIsAIBrainOpen(true);
+              setActiveRailTab('brain');
+            } else {
+              setActiveRailTab(tab);
+            }
+          }}
+          unreadChatsCount={totalUnreadCount}
+          connectedChannelsCount={connectedChannels.length}
+          isAIActiveGlobal={isAIActiveGlobal}
+          darkMode={darkMode}
+        />
+      )}
+
       {/* Toast de Confirmação para Sair no Mobile */}
       {exitToastVisible && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-[#202c33] text-[#e9edef] text-xs font-medium rounded-full shadow-2xl border border-[#313d45] flex items-center gap-2 animate-in fade-in duration-200 pointer-events-none select-none">
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-[#202c33] text-[#e9edef] text-xs font-medium rounded-full shadow-2xl border border-[#313d45] flex items-center gap-2 animate-in fade-in duration-200 pointer-events-none select-none">
           <span>Pressione voltar novamente para sair do ChatsApp</span>
         </div>
       )}

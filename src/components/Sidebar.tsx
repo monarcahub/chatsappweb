@@ -89,6 +89,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onFilterChange,
   selectedChannel,
   onChannelChange,
+  isMobileMode = false,
   darkMode,
   onToggleDarkMode,
   onOpenArchitectureModal,
@@ -888,7 +889,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       {/* Conversation List */}
-      <div className="flex-1 overflow-y-auto divide-y divide-transparent custom-scrollbar">
+      <div className={`flex-1 overflow-y-auto divide-y divide-transparent custom-scrollbar ${isMobileMode ? 'pb-20' : ''}`}>
         {/* Pasta com o título "Arquivadas" (Exibida com destaque no topo da lista quando há conversas arquivadas) */}
         {!isViewingArchived && archivedCount > 0 && (
           <div
