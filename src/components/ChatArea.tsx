@@ -1068,12 +1068,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 <Search className="w-5 h-5" />
               </button>
 
-              {/* Botão de Arquivar / Desarquivar conversa diretamente no Chat */}
+              {/* Botão de Arquivar / Desarquivar conversa diretamente no Chat (somente desktop, no mobile fica no menu 3 pontos) */}
               {onToggleArchive && (
                 <button
                   id="btn-chat-archive-header"
                   onClick={() => onToggleArchive(conversation.id)}
-                  className={`p-1.5 rounded-full transition-colors cursor-pointer ${
+                  className={`p-1.5 rounded-full transition-colors cursor-pointer hidden sm:flex ${
                     conversation.isArchived
                       ? 'text-[#00a884] bg-[#00a884]/15 hover:bg-[#00a884]/25'
                       : darkMode
@@ -1090,11 +1090,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 </button>
               )}
 
-              {/* Botão para abrir o Painel CRM / Informações */}
+              {/* Botão para abrir o Painel CRM / Informações (somente desktop, no mobile usa-se o link 'Ver CRM' no topo) */}
               <button
                 id="btn-panel-info"
                 onClick={onToggleRightPanel}
-                className={`flex items-center gap-0.5 px-2 py-1.5 rounded-lg transition-colors cursor-pointer ${
+                className={`items-center gap-0.5 px-2 py-1.5 rounded-lg transition-colors cursor-pointer hidden sm:flex ${
                   isRightPanelOpen
                     ? darkMode
                       ? 'bg-[#374248] text-[#00a884]'

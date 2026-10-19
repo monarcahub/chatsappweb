@@ -197,7 +197,7 @@ CREATE TABLE IF NOT EXISTS public.cerebro_ia (
     -- 2. REGRAS DE AUTOMAÇÃO E COMPORTAMENTO
     is_active BOOLEAN DEFAULT true, -- Ativar/pausar IA globalmente
     allow_calls BOOLEAN DEFAULT false, -- Autorizar agendamento / chamadas
-    reply_groups BOOLEAN DEFAULT false, -- Responder mensagens em grupos de WhatsApp
+    reply_groups BOOLEAN DEFAULT false, -- Responder mensagens em grupos de WhatsApp (desativado/não disponível)
     reply_audio BOOLEAN DEFAULT true, -- Responder com áudio ou transcrever notas de voz
     send_images BOOLEAN DEFAULT false, -- Enviar imagens / fotos do catálogo
     integrate_agenda BOOLEAN DEFAULT false, -- Integração com agenda / compromissos
@@ -205,12 +205,22 @@ CREATE TABLE IF NOT EXISTS public.cerebro_ia (
     ai_active_all BOOLEAN DEFAULT false, -- Ativar IA para 100% dos novos contatos
     omnichannel BOOLEAN DEFAULT false, -- Modo Omnichannel (WhatsApp + Instagram + Webchat)
     ai_active_instagram BOOLEAN DEFAULT false, -- IA respondendo Direct do Instagram
+    repost_instagram_stories BOOLEAN DEFAULT false, -- Repostar marcações no stories do Instagram
     instagram_status TEXT DEFAULT 'disconnected', -- Status de conexão do Instagram
     use_official_api_coexistencia BOOLEAN DEFAULT false, -- Coexistência com WhatsApp Cloud API
     test_number TEXT, -- Telefone de testes / sandbox
-    extra_users_count INTEGER DEFAULT 0, -- Limite de atendentes extras / licenças
+    extra_users_count INTEGER DEFAULT 1, -- Limite de atendentes simultâneos / dispositivos (padrão: 1)
     
-    -- 3. BASE DE CONHECIMENTO MODULAR (Regras avançadas, produtos, restrições e FAQs modulares)
+    -- Notificação de Transbordo & Atendimento Humano
+    notify_human_handoff BOOLEAN DEFAULT false, -- Avisar quando cliente solicitar atendimento humano
+    human_handoff_phone TEXT DEFAULT '', -- Número de WhatsApp/telefone para receber alerta de transbordo
+    human_handoff_message TEXT DEFAULT '', -- Mensagem de alerta personalizada
+    
+    -- Mensagens Programadas / Templates Meta
+    scheduled_messages_enabled BOOLEAN DEFAULT false, -- Programar envio de mensagens e templates
+    
+    -- 3. UNIDADES / FILIAIS & BASE DE CONHECIMENTO MODULAR
+    branches JSONB DEFAULT '[]'::jsonb, -- Cadastro de múltiplas unidades/filiais
     knowledge_base JSONB DEFAULT '[]'::jsonb,
     
     -- 4. CONTROLE TEMPORAL
@@ -487,6 +497,9 @@ CREATE TABLE IF NOT EXISTS public.cerebro_ia (
     -- Base de Conhecimento Modular (JSON com regras, produtos, faqs, proibições)
     knowledge_base JSONB DEFAULT '[]'::jsonb,
 
+    -- Múltiplas Unidades / Filiais da Empresa
+    branches JSONB DEFAULT '[]'::jsonb,
+
     -- Controle Temporal
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -668,10 +681,15 @@ CREATE TABLE IF NOT EXISTS public.cerebro_ia (
     ai_active_all BOOLEAN DEFAULT false,
     omnichannel BOOLEAN DEFAULT false,
     ai_active_instagram BOOLEAN DEFAULT false,
+    repost_instagram_stories BOOLEAN DEFAULT false,
     instagram_status TEXT DEFAULT 'disconnected',
     use_official_api_coexistencia BOOLEAN DEFAULT false,
     test_number TEXT,
-    extra_users_count INTEGER DEFAULT 0,
+    extra_users_count INTEGER DEFAULT 1,
+    notify_human_handoff BOOLEAN DEFAULT false,
+    human_handoff_phone TEXT DEFAULT '',
+    human_handoff_message TEXT DEFAULT '',
+    scheduled_messages_enabled BOOLEAN DEFAULT false,
     knowledge_base JSONB DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),

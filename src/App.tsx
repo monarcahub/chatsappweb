@@ -562,6 +562,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               currentAccount={currentAccount}
               isAIActiveGlobal={isAIActiveGlobal}
               onToggleAIGlobal={handleToggleAIGlobal}
+              onOpenBrain={() => setIsAIBrainOpen(true)}
             />
           ) : activeRailTab === 'tools' ? (
             <ToolsView

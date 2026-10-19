@@ -175,6 +175,7 @@ export function useEvolutionWhatsApp(options?: UseEvolutionWhatsAppOptions) {
         }
 
         let saved = false;
+        let targetChannelId: string | null = null;
 
         // 1. Tenta salvar diretamente no Supabase
         if (isSupabaseConfigured) {
@@ -184,7 +185,6 @@ export function useEvolutionWhatsApp(options?: UseEvolutionWhatsAppOptions) {
             .eq('account_id', options.accountId)
             .eq('type', 'whatsapp');
 
-          let targetChannelId: string | null = null;
           if (existing && existing.length > 0) {
             const match = existing.find(
               (c: any) =>
@@ -206,20 +206,27 @@ export function useEvolutionWhatsApp(options?: UseEvolutionWhatsAppOptions) {
               .eq('id', targetChannelId);
             if (!updErr) saved = true;
           } else {
-            const { error: insErr } = await supabase.from('channels').insert({
-              account_id: options.accountId,
-              name: chName,
-              type: 'whatsapp',
-              is_active: true,
-              config: channelConfig,
-            });
-            if (!insErr) saved = true;
+            const { data: insData, error: insErr } = await supabase
+              .from('channels')
+              .insert({
+                account_id: options.accountId,
+                name: chName,
+                type: 'whatsapp',
+                is_active: true,
+                config: channelConfig,
+              })
+              .select('id')
+              .single();
+            if (!insErr) {
+              saved = true;
+              if (insData?.id) targetChannelId = insData.id;
+            }
           }
         }
 
         // 2. Fallback para rota /api/channels
         if (!saved) {
-          await fetch('/api/channels', {
+          const apiRes = await fetch('/api/channels', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -228,11 +235,18 @@ export function useEvolutionWhatsApp(options?: UseEvolutionWhatsAppOptions) {
               type: 'whatsapp',
               config: channelConfig,
             }),
-          }).catch(() => {});
+          }).catch(() => null);
+
+          if (apiRes && apiRes.ok) {
+            const apiData = await apiRes.json().catch(() => null);
+            if (apiData?.channel?.id) {
+              targetChannelId = apiData.channel.id;
+            }
+          }
         }
 
         if (options?.onSuccess) {
-          options.onSuccess({ instanceName: finalInstanceName, name: chName });
+          options.onSuccess({ instanceName: finalInstanceName, name: chName, channelId: targetChannelId });
         }
       } catch (e) {
         console.warn('[Evolution] Erro ao persistir canal conectado:', e);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   ArrowLeft,
   MessageSquare,
@@ -25,6 +25,9 @@ import {
   Check,
   Pencil,
   AlertCircle,
+  Building2,
+  MapPin,
+  Phone,
 } from 'lucide-react';
 import { ChannelType, Account } from '../types';
 import { useAuth } from '../context/AuthContext';
@@ -32,6 +35,7 @@ import { useMetaWhatsAppSignup } from '../hooks/useMetaWhatsAppSignup';
 import { useEvolutionWhatsApp, sanitizeEvolutionInstanceName } from '../hooks/useEvolutionWhatsApp';
 import { EvolutionQRModal } from './EvolutionQRModal';
 import { TelegramIcon } from './TelegramIcon';
+import { BranchItem } from './AIBrainModal';
 import { supabase, isSupabaseConfigured, ensureSupabaseConfig } from '../lib/supabase';
 
 interface ChannelsSidebarProps {
@@ -42,6 +46,7 @@ interface ChannelsSidebarProps {
   currentAccount?: Account | null;
   isAIActiveGlobal?: boolean;
   onToggleAIGlobal?: (newStatus: boolean) => void;
+  onOpenBrain?: () => void;
 }
 
 interface ConnectedChannelItem {
@@ -65,6 +70,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
   currentAccount,
   isAIActiveGlobal = true,
   onToggleAIGlobal,
+  onOpenBrain,
 }) => {
   const { user, availableAccounts } = useAuth();
   const [channels, setChannels] = useState<ConnectedChannelItem[]>([]);
@@ -143,17 +149,91 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
   const [successToast, setSuccessToast] = useState<string | null>(null);
   const [isTogglingGlobalAI, setIsTogglingGlobalAI] = useState(false);
 
+  // Recomendar configuração do Cérebro antes de conectar canais (para nova empresa)
+  const [showBrainRecommendationModal, setShowBrainRecommendationModal] = useState(false);
+
+  // Múltiplas Unidades / Filiais (cerebro_ia.branches)
+  const [availableBranches, setAvailableBranches] = useState<BranchItem[]>([]);
+  const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
+
   useEffect(() => {
     if (!successToast) return;
     const timer = setTimeout(() => setSuccessToast(null), 3500);
     return () => clearTimeout(timer);
   }, [successToast]);
 
+  // Carrega unidades da empresa selecionada (cerebro_ia.branches)
+  const fetchAccountBranches = useCallback(async () => {
+    if (!currentAccount?.id || currentAccount.id === 'all') {
+      setAvailableBranches([]);
+      return;
+    }
+    try {
+      await ensureSupabaseConfig();
+      const { data, error } = await supabase
+        .from('cerebro_ia')
+        .select('branches')
+        .eq('account_id', currentAccount.id)
+        .maybeSingle();
+
+      if (!error && data?.branches && Array.isArray(data.branches)) {
+        setAvailableBranches(data.branches);
+      } else {
+        setAvailableBranches([]);
+      }
+    } catch (err) {
+      console.warn('Erro ao buscar unidades cadastradas:', err);
+      setAvailableBranches([]);
+    }
+  }, [currentAccount?.id]);
+
+  useEffect(() => {
+    fetchAccountBranches();
+  }, [fetchAccountBranches]);
+
+  // Associa o channel_id real da tabela channels à unidade correspondente em cerebro_ia.branches
+  const associateChannelToBranch = async (channelId: string, branchId: string | null) => {
+    if (!branchId || !currentAccount?.id || currentAccount.id === 'all') return;
+    try {
+      await ensureSupabaseConfig();
+      const targetAccId = currentAccount.id;
+
+      const { data: cfg, error: getErr } = await supabase
+        .from('cerebro_ia')
+        .select('branches')
+        .eq('account_id', targetAccId)
+        .maybeSingle();
+
+      if (!getErr && cfg && Array.isArray(cfg.branches)) {
+        const updatedBranches = cfg.branches.map((b: BranchItem) => {
+          if (b.unidade_id === branchId) {
+            return { ...b, channel_id: channelId };
+          }
+          return b;
+        });
+
+        await supabase
+          .from('cerebro_ia')
+          .update({
+            branches: updatedBranches,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('account_id', targetAccId);
+
+        setAvailableBranches(updatedBranches);
+        setSuccessToast('Canal vinculado à unidade com sucesso!');
+      }
+    } catch (err) {
+      console.warn('Erro ao associar canal à unidade no Cérebro:', err);
+    }
+  };
+
   // Helper para resetar e fechar modal
   const resetConnectModal = () => {
     setIsConnectModalOpen(false);
     setSelectedPlatform(null);
     setWhatsAppApiChoice(null);
+    setSelectedBranchId(null);
     setNewChannelName('');
     setNewChannelPhone('');
     setSelectedCountry(COUNTRY_OPTIONS[0]);
@@ -167,6 +247,42 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
     setShowManualMetaConfig(false);
   };
 
+  // Handler inteligente para abrir conexão de canal respeitando a recomendação do Cérebro
+  const handleOpenConnectModal = () => {
+    const sessionKey = `chatsapp_ignore_brain_rec_${currentAccount?.id || 'default'}`;
+    const isIgnored = typeof window !== 'undefined' && sessionStorage.getItem(sessionKey) === 'true';
+
+    // Regra: Mostrar aviso apenas se a empresa não tiver canais cadastrados e não tiver ignorado na sessão
+    if (channels.length === 0 && !isIgnored) {
+      setShowBrainRecommendationModal(true);
+      return;
+    }
+
+    setSelectedPlatform(null);
+    setWhatsAppApiChoice(null);
+    setSelectedBranchId(null);
+    setIsConnectModalOpen(true);
+  };
+
+  const handleIgnoreBrainRecommendation = () => {
+    const sessionKey = `chatsapp_ignore_brain_rec_${currentAccount?.id || 'default'}`;
+    if (typeof window !== 'undefined') {
+      sessionStorage.setItem(sessionKey, 'true');
+    }
+    setShowBrainRecommendationModal(false);
+    setSelectedPlatform(null);
+    setWhatsAppApiChoice(null);
+    setSelectedBranchId(null);
+    setIsConnectModalOpen(true);
+  };
+
+  const handleGoToBrainFromRecommendation = () => {
+    setShowBrainRecommendationModal(false);
+    if (onOpenBrain) {
+      onOpenBrain();
+    }
+  };
+
   // Hook Oficial do Embedded Signup da Meta com Suporte a Modo Coexistência
   const {
     isSdkLoaded,
@@ -178,8 +294,13 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
   } = useMetaWhatsAppSignup({
     currentUser: user,
     currentAccountId: currentAccount?.id,
-    onSuccess: () => {
+    onSuccess: async (newChan: any) => {
+      const createdChanId = newChan?.channel?.id || newChan?.id;
+      if (selectedBranchId && createdChanId) {
+        await associateChannelToBranch(createdChanId, selectedBranchId);
+      }
       fetchChannels();
+      fetchAccountBranches();
       resetConnectModal();
     },
   });
@@ -209,8 +330,13 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
     userEmail: user?.email,
     accountId: currentAccount?.id,
     accountName: currentAccount?.name,
-    onSuccess: () => {
+    onSuccess: async (data?: any) => {
+      const createdChanId = data?.channelId || data?.id;
+      if (selectedBranchId && createdChanId) {
+        await associateChannelToBranch(createdChanId, selectedBranchId);
+      }
       fetchChannels();
+      fetchAccountBranches();
       resetConnectModal();
     },
   });
@@ -679,8 +805,12 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
 
         if (!error && data) {
           created = true;
+          if (selectedBranchId && data.id) {
+            await associateChannelToBranch(data.id, selectedBranchId);
+          }
           resetConnectModal();
           await fetchChannels();
+          await fetchAccountBranches();
         }
       }
 
@@ -698,8 +828,14 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
         });
 
         if (res.ok) {
+          const resJson = await res.json().catch(() => null);
+          const fallbackChanId = resJson?.channel?.id || resJson?.id;
+          if (selectedBranchId && fallbackChanId) {
+            await associateChannelToBranch(fallbackChanId, selectedBranchId);
+          }
           resetConnectModal();
           await fetchChannels();
+          await fetchAccountBranches();
         }
       }
     } catch (err) {
@@ -773,11 +909,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
         </div>
 
         <button
-          onClick={() => {
-            setSelectedPlatform(null);
-            setWhatsAppApiChoice(null);
-            setIsConnectModalOpen(true);
-          }}
+          onClick={handleOpenConnectModal}
           className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#00a884] hover:bg-[#02906f] text-white flex items-center gap-1 transition-colors cursor-pointer"
         >
           <Plus className="w-3.5 h-3.5" />
@@ -883,11 +1015,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
               Conecte sua primeira instância de WhatsApp para que os atendentes humanos e a IA possam responder clientes.
             </p>
             <button
-              onClick={() => {
-                setSelectedPlatform(null);
-                setWhatsAppApiChoice(null);
-                setIsConnectModalOpen(true);
-              }}
+              onClick={handleOpenConnectModal}
               className="px-4 py-2 rounded-xl bg-[#00a884] hover:bg-[#009374] text-white text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer shadow-sm transition-colors"
             >
               <Plus className="w-4 h-4" />
@@ -939,8 +1067,21 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                       </span>
                     </div>
 
-                    <div className="text-xs font-mono font-semibold text-[#00a884]">
-                      {channel.identifier}
+                    <div className="text-xs font-mono font-semibold text-[#00a884] flex items-center justify-between gap-1 flex-wrap">
+                      <span>{channel.identifier}</span>
+                      {(() => {
+                        const linkedBranch = availableBranches.find((b) => b.channel_id === channel.id);
+                        if (!linkedBranch) return null;
+                        return (
+                          <span
+                            className="inline-flex items-center gap-1 text-[10px] font-semibold text-purple-300 bg-purple-500/15 border border-purple-500/30 px-2 py-0.5 rounded-md"
+                            title={`Unidade vinculada: ${linkedBranch.name}`}
+                          >
+                            <Building2 className="w-3 h-3" />
+                            <span>Unidade: {linkedBranch.name}</span>
+                          </span>
+                        );
+                      })()}
                     </div>
 
                     <div className="mt-1 text-[11px] text-[#8696a0] flex flex-wrap items-center justify-between gap-1">
@@ -1799,6 +1940,47 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                       </div>
                     )}
 
+                    {/* Seleção de Unidade Cadastrada (Cérebro da IA) */}
+                    {availableBranches.length > 0 && (
+                      <div className="space-y-1">
+                        <label className="block text-xs font-semibold text-[#8696a0] flex items-center justify-between">
+                          <span className="flex items-center gap-1.5">
+                            <Building2 className="w-3.5 h-3.5 text-[#1877F2]" />
+                            <span>Vincular a uma Unidade Cadastrada (Opcional)</span>
+                          </span>
+                          <span className="text-[10px] text-gray-500 font-normal">
+                            {availableBranches.length} unidade(s)
+                          </span>
+                        </label>
+                        <select
+                          value={selectedBranchId || ''}
+                          onChange={(e) => {
+                            const val = e.target.value || null;
+                            setSelectedBranchId(val);
+                            if (val) {
+                              const b = availableBranches.find((x) => x.unidade_id === val);
+                              if (b && (!newChannelName || newChannelName === 'WhatsApp Comercial')) {
+                                setNewChannelName(`WhatsApp Oficial ${b.name}`);
+                              }
+                            }
+                          }}
+                          className={`w-full px-3 py-2.5 rounded-xl border text-xs outline-none cursor-pointer ${
+                            darkMode ? 'bg-[#111b21] border-[#313d45] text-white focus:border-[#1877F2]' : 'bg-white border-[#d1d7db] text-black focus:border-[#1877F2]'
+                          }`}
+                        >
+                          <option value="">Nenhuma unidade (Conectar canal sem vincular)</option>
+                          {availableBranches.map((b) => (
+                            <option key={b.unidade_id} value={b.unidade_id}>
+                              {b.name} {b.phone ? `(${b.phone})` : ''} {b.channel_id ? '• [Já possui canal]' : ''}
+                            </option>
+                          ))}
+                        </select>
+                        <span className="text-[10px] text-[#8696a0] block">
+                          Ao concluir a conexão oficial, este canal será vinculado à unidade selecionada no Cérebro.
+                        </span>
+                      </div>
+                    )}
+
                     {/* Botão de Ação Oficial Meta FB.login */}
                     <button
                       type="button"
@@ -2030,6 +2212,52 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                     </span>
                   </div>
 
+                  {/* Seleção de Unidade Cadastrada (Cérebro da IA) */}
+                  {availableBranches.length > 0 && (
+                    <div className="space-y-1">
+                      <label className="block text-xs font-semibold text-[#8696a0] flex items-center justify-between">
+                        <span className="flex items-center gap-1.5">
+                          <Building2 className="w-3.5 h-3.5 text-[#00a884]" />
+                          <span>Vincular a uma Unidade Cadastrada (Opcional)</span>
+                        </span>
+                        <span className="text-[10px] text-gray-500 font-normal">
+                          {availableBranches.length} unidade(s)
+                        </span>
+                      </label>
+                      <select
+                        value={selectedBranchId || ''}
+                        onChange={(e) => {
+                          const val = e.target.value || null;
+                          setSelectedBranchId(val);
+                          if (val) {
+                            const b = availableBranches.find((x) => x.unidade_id === val);
+                            if (b) {
+                              if (!newChannelName || newChannelName === 'WhatsApp Comercial') {
+                                setNewChannelName(`WhatsApp ${b.name}`);
+                              }
+                              if (b.phone && !newChannelPhone) {
+                                setNewChannelPhone(formatPhone(b.phone, selectedCountry.code));
+                              }
+                            }
+                          }
+                        }}
+                        className={`w-full px-3 py-2.5 rounded-xl border text-xs outline-none cursor-pointer ${
+                          darkMode ? 'bg-[#111b21] border-[#313d45] text-white focus:border-[#00a884]' : 'bg-[#f0f2f5] border-[#d1d7db] text-black focus:border-[#00a884]'
+                        }`}
+                      >
+                        <option value="">Nenhuma unidade (Conectar canal sem vincular)</option>
+                        {availableBranches.map((b) => (
+                          <option key={b.unidade_id} value={b.unidade_id}>
+                            {b.name} {b.phone ? `(${b.phone})` : ''} {b.channel_id ? '• [Já possui canal]' : ''}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="text-[10px] text-[#8696a0] block">
+                        Ao conectar, este canal será associado automaticamente à unidade selecionada.
+                      </span>
+                    </div>
+                  )}
+
                   <div
                     className={`p-3 rounded-xl border text-xs space-y-1.5 ${
                       darkMode ? 'bg-[#111b21] border-[#313d45] text-[#8696a0]' : 'bg-emerald-50 border-emerald-200 text-emerald-900'
@@ -2252,6 +2480,74 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                 {confirmModal.confirmText || 'Confirmar'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Recomendar Configuração do Cérebro da IA antes de Conectar Canal */}
+      {showBrainRecommendationModal && (
+        <div className="fixed inset-0 z-60 bg-black/80 flex items-center justify-center p-4 backdrop-blur-xs animate-in fade-in">
+          <div
+            className={`w-full max-w-md rounded-2xl p-6 shadow-2xl border animate-in zoom-in-95 ${
+              darkMode ? 'bg-[#202c33] border-[#313d45] text-[#e9edef]' : 'bg-white border-[#e9edef] text-[#111b21]'
+            }`}
+          >
+            <div className="flex items-start gap-3.5 mb-3">
+              <div className="w-11 h-11 rounded-2xl bg-[#00a884]/20 border border-[#00a884]/30 text-[#00a884] flex items-center justify-center shrink-0">
+                <Brain className="w-6 h-6" />
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#00a884]/20 text-[#00a884] flex items-center gap-1">
+                    <Sparkles className="w-3 h-3" />
+                    Recomendação
+                  </span>
+                </div>
+                <h3 className="font-bold text-sm sm:text-base leading-snug">
+                  Recomendamos preparar sua IA antes de conectar um canal.
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBrainRecommendationModal(false)}
+                className={`p-1 rounded-lg transition-colors cursor-pointer ${
+                  darkMode ? 'text-gray-400 hover:text-white hover:bg-[#313d45]' : 'text-gray-500 hover:text-black hover:bg-gray-100'
+                }`}
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className={`text-xs sm:text-sm leading-relaxed mb-6 italic ${darkMode ? 'text-[#8696a0]' : 'text-[#667781]'}`}>
+              "Cadastre as informações básicas da sua empresa no Cérebro da IA para que ela conheça seu negócio e esteja preparada para atender seus clientes."
+            </p>
+
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                onClick={handleGoToBrainFromRecommendation}
+                className="w-full py-2.5 px-4 rounded-xl text-xs sm:text-sm font-bold bg-[#00a884] hover:bg-[#02906f] text-white flex items-center justify-center gap-2 transition-all shadow-md cursor-pointer"
+              >
+                <Brain className="w-4 h-4" />
+                <span>Acessar Cérebro da IA</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleIgnoreBrainRecommendation}
+                className={`w-full py-2 px-4 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                  darkMode
+                    ? 'border-gray-700 text-gray-300 hover:bg-[#313d45] hover:text-white'
+                    : 'border-gray-300 text-gray-600 hover:bg-gray-100 hover:text-black'
+                }`}
+              >
+                Ignorar e continuar
+              </button>
+            </div>
+
+            <p className="text-[10px] text-center text-gray-500 mt-3">
+              Você pode conectar normalmente agora (incluindo apenas para atendimento humano/omnichannel) e configurar o cérebro a qualquer momento.
+            </p>
           </div>
         </div>
       )}
