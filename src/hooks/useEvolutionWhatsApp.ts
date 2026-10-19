@@ -162,7 +162,7 @@ export function useEvolutionWhatsApp(options?: UseEvolutionWhatsAppOptions) {
         const channelConfig: Record<string, any> = {
           api_type: 'evolution_qr',
           instance_name: finalInstanceName,
-          provider: 'Evolution API (QR Code)',
+          provider: 'Api Padrão',
           status: 'connected',
           coexistence_enabled: false,
           ai_enabled: true,

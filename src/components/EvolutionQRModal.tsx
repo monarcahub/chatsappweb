@@ -183,11 +183,11 @@ export const EvolutionQRModal: React.FC<EvolutionQRModalProps> = ({
                 </ol>
               </div>
 
-              {/* Informação sobre segurança e Evolution API */}
+              {/* Informação sobre segurança e Api Padrão */}
               <div className="flex items-center gap-2 px-1 text-[11px] text-[#8696a0]">
                 <ShieldCheck className="w-3.5 h-3.5 text-[#00a884] shrink-0" />
                 <span>
-                  Conexão segura via Evolution API. Seus dados e mensagens trafegam com criptografia.
+                  Conexão segura via Api Padrão MonarcaHub. Seus dados e mensagens trafegam com criptografia.
                 </span>
               </div>
             </div>

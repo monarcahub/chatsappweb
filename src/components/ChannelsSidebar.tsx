@@ -398,7 +398,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
       ch.type === 'whatsapp'
         ? apiType === 'meta_official'
           ? 'Api Oficial Meta Business'
-          : 'Evolution API (QR Code)'
+          : 'Api Padrão'
         : ch.type === 'instagram'
         ? 'Instagram Direct'
         : ch.type === 'telegram'
@@ -1086,7 +1086,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
 
                     <div className="mt-1 text-[11px] text-[#8696a0] flex flex-wrap items-center justify-between gap-1">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span>Provedor: <strong className={darkMode ? 'text-gray-300' : 'text-gray-700'}>{channel.provider}</strong></span>
+                        <span>Provedor: <strong className={darkMode ? 'text-gray-300' : 'text-gray-700'}>{channel.provider?.toLowerCase().includes('evolution') ? 'Api Padrão' : channel.provider}</strong></span>
                         {channel.type === 'whatsapp' && channel.apiType === 'meta_official' && (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#1877F2]/15 text-[#1877F2] border border-[#1877F2]/30 shadow-xs">
                             <ShieldCheck className="w-3 h-3" /> Mais Segura
@@ -1094,7 +1094,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                         )}
                         {channel.type === 'whatsapp' && (channel.apiType === 'evolution_qr' || channel.apiType === 'monarcahub_standard') && (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#00a884]/15 text-[#00a884] border border-[#00a884]/30">
-                            <QrCode className="w-3 h-3" /> Evolution QR
+                            <QrCode className="w-3 h-3" /> MonarcaHub QR
                           </span>
                         )}
                       </div>
