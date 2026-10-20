@@ -47,8 +47,8 @@ interface SidebarProps {
   onSearchChange: (val: string) => void;
   selectedFilter: 'all' | 'unread' | 'favorites' | 'groups';
   onFilterChange: (filter: 'all' | 'unread' | 'favorites' | 'groups') => void;
-  selectedChannel: 'all' | ChannelType;
-  onChannelChange: (channel: 'all' | ChannelType) => void;
+  selectedChannel: 'all' | ChannelType | string;
+  onChannelChange: (channel: 'all' | ChannelType | string) => void;
   isMobileMode: boolean;
   onToggleMobileMode: () => void;
   darkMode: boolean;
@@ -220,32 +220,57 @@ export const Sidebar: React.FC<SidebarProps> = ({
     };
   }, [currentAccount?.id, availableAccounts]);
 
-  // Lista dos tipos de canais que estão de fato conectados na conta do usuário logado
-  const connectedChannelTypes = useMemo(() => {
-    const typesSet = new Set<ChannelType>();
+  // Lista dos canais individuais conectados da empresa selecionada (com nome, tipo e id)
+  const connectedChannelsList = useMemo(() => {
+    const listMap = new Map<string, { id: string; name: string; type: ChannelType; is_active?: boolean }>();
 
     const pool = (connectedChannels && connectedChannels.length > 0 ? connectedChannels : internalChannels)
       .filter((ch: any) => ch && ch.is_active !== false);
 
     for (const ch of pool) {
-      const t = String(ch.type || '').toLowerCase().trim();
-      const n = String(ch.name || '').toLowerCase().trim();
-      if (t.includes('telegram') || n.includes('telegram')) typesSet.add('telegram');
-      else if (t.includes('instagram') || n.includes('instagram')) typesSet.add('instagram');
-      else if (t.includes('webchat') || t.includes('site') || n.includes('site') || n.includes('webchat')) typesSet.add('webchat');
-      else if (t.includes('whatsapp') || n.includes('whats') || n.includes('waba')) typesSet.add('whatsapp');
-      else if (ch.type) typesSet.add(ch.type as ChannelType);
+      const id = String(ch.id || ch.name || `${ch.type}-${Math.random()}`);
+      if (!listMap.has(id)) {
+        listMap.set(id, {
+          id: ch.id || id,
+          name: ch.name || (ch.type === 'whatsapp' ? 'WhatsApp' : ch.type === 'instagram' ? 'Instagram' : ch.type === 'telegram' ? 'Telegram' : 'Chat Site'),
+          type: (ch.type as ChannelType) || 'whatsapp',
+          is_active: ch.is_active,
+        });
+      }
     }
 
-    return Array.from(typesSet);
-  }, [connectedChannels, internalChannels]);
+    // Se nenhum canal estiver registrado em channels mas existirem conversas carregadas:
+    if (listMap.size === 0 && conversations.length > 0) {
+      const typesFound = new Set<ChannelType>();
+      for (const conv of conversations) {
+        if (conv.contact?.channel) {
+          typesFound.add(conv.contact.channel);
+        }
+      }
+      for (const t of typesFound) {
+        listMap.set(t, {
+          id: t,
+          name: t === 'whatsapp' ? 'WhatsApp' : t === 'instagram' ? 'Instagram' : t === 'telegram' ? 'Telegram' : 'Chat Site',
+          type: t,
+          is_active: true,
+        });
+      }
+    }
+
+    return Array.from(listMap.values());
+  }, [connectedChannels, internalChannels, conversations]);
 
   // Reseta canal selecionado se ele não estiver nos canais conectados da empresa
   useEffect(() => {
-    if (selectedChannel !== 'all' && connectedChannelTypes.length > 0 && !connectedChannelTypes.includes(selectedChannel)) {
-      onChannelChange('all');
+    if (selectedChannel !== 'all' && connectedChannelsList.length > 0) {
+      const exists = connectedChannelsList.some(
+        (c) => c.id === selectedChannel || c.name === selectedChannel || c.type === selectedChannel
+      );
+      if (!exists) {
+        onChannelChange('all');
+      }
     }
-  }, [connectedChannelTypes, selectedChannel, onChannelChange]);
+  }, [connectedChannelsList, selectedChannel, onChannelChange]);
 
   // Separação de conversas arquivadas vs ativas
   const archivedConversations = conversations.filter((c) => c.isArchived);
@@ -259,12 +284,58 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Counters for filter chips (apenas conversas ativas normais)
   const totalUnread = activeConversations.reduce((acc, c) => acc + c.unreadCount, 0);
 
+  // Contagem de conversas não lidas por canal individual
+  const unreadCountByChannel = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const conv of activeConversations) {
+      if (conv.unreadCount > 0) {
+        const ch = connectedChannelsList.find(
+          (c) =>
+            (conv.channelId && (c.id === conv.channelId || c.name === conv.channelId)) ||
+            (conv.contact?.channelId && (c.id === conv.contact.channelId || c.name === conv.contact.channelId))
+        );
+        if (ch) {
+          counts[ch.id] = (counts[ch.id] || 0) + conv.unreadCount;
+        } else if (conv.contact?.channel) {
+          const sameType = connectedChannelsList.filter((c) => c.type === conv.contact.channel);
+          if (sameType.length === 1) {
+            counts[sameType[0].id] = (counts[sameType[0].id] || 0) + conv.unreadCount;
+          }
+        }
+      }
+    }
+    return counts;
+  }, [activeConversations, connectedChannelsList]);
+
   // Filter conversations
   const filteredConversations = baseConversations.filter((conv) => {
     if (!isViewingArchived) {
-      // Channel filter
-      if (selectedChannel !== 'all' && conv.contact.channel !== selectedChannel) {
-        return false;
+      // Channel filter por canal individual ou tipo
+      if (selectedChannel !== 'all') {
+        const targetChannel = connectedChannelsList.find(
+          (c) => c.id === selectedChannel || c.name === selectedChannel
+        );
+
+        if (targetChannel) {
+          const matchId = Boolean(conv.channelId && (conv.channelId === targetChannel.id || conv.channelId === targetChannel.name));
+          const matchContactId = Boolean(conv.contact?.channelId && (
+            conv.contact.channelId === targetChannel.id || 
+            conv.contact.channelId === targetChannel.name
+          ));
+          
+          // Se só houver 1 canal daquele tipo conectado, podemos associar as conversas daquele tipo
+          const sameTypeCount = connectedChannelsList.filter((c) => c.type === targetChannel.type).length;
+          const matchFallbackType = sameTypeCount === 1 && conv.contact?.channel === targetChannel.type;
+
+          if (!matchId && !matchContactId && !matchFallbackType) {
+            return false;
+          }
+        } else {
+          // Caso selectedChannel seja um tipo genérico legado ('whatsapp', 'instagram'...)
+          if (conv.contact?.channel !== selectedChannel && conv.channelId !== selectedChannel) {
+            return false;
+          }
+        }
       }
 
       // Status / Category filter
@@ -636,95 +707,90 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* Omnichannel Channel Filter Tabs - Logo abaixo da caixa de pesquisa */}
-      {connectedChannelTypes.length > 0 && (
+      {connectedChannelsList.length > 0 && (
         <div
           className={`px-3 py-1.5 flex items-center gap-1.5 border-b overflow-x-auto no-scrollbar ${
             darkMode ? 'bg-[#111b21] border-[#222e35]' : 'bg-white border-[#e9edef]'
           }`}
         >
-          {connectedChannelTypes.length > 1 && (
+          {connectedChannelsList.length > 1 && (
             <button
               id="channel-all"
+              type="button"
               onClick={() => onChannelChange('all')}
-              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium transition-all whitespace-nowrap cursor-pointer ${
+              className={`px-2.5 py-1 rounded-full text-[11px] font-medium transition-all whitespace-nowrap cursor-pointer flex items-center gap-1.5 shrink-0 ${
                 selectedChannel === 'all'
-                  ? 'bg-[#00a884] text-white font-semibold'
+                  ? 'bg-[#00a884] text-white font-semibold shadow-xs'
                   : darkMode
-                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
-                  : 'bg-[#e9edef] text-[#54656f]'
+                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef] hover:bg-[#2a3942]'
+                  : 'bg-[#e9edef] text-[#54656f] hover:bg-gray-200'
               }`}
+              title="Exibir conversas de todos os canais conectados"
             >
-              Todos os Canais
+              <span>Todos os Canais</span>
+              {totalUnread > 0 && (
+                <span
+                  className={`px-1.5 py-0.2 rounded-full text-[9px] font-bold ${
+                    selectedChannel === 'all' ? 'bg-white/25 text-white' : 'bg-[#00a884] text-white'
+                  }`}
+                >
+                  {totalUnread}
+                </span>
+              )}
             </button>
           )}
 
-          {connectedChannelTypes.includes('whatsapp') && (
-            <button
-              id="channel-whatsapp"
-              onClick={() => onChannelChange(selectedChannel === 'whatsapp' && connectedChannelTypes.length > 1 ? 'all' : 'whatsapp')}
-              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap cursor-pointer ${
-                selectedChannel === 'whatsapp' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
-                  ? 'bg-[#25d366] text-white font-semibold'
-                  : darkMode
-                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
-                  : 'bg-[#e9edef] text-[#54656f]'
-              }`}
-            >
-              <MessageSquare className="w-3 h-3" />
-              <span>WhatsApp</span>
-            </button>
-          )}
+          {connectedChannelsList.map((ch) => {
+            const isSelected = selectedChannel === ch.id || selectedChannel === ch.name;
+            const channelUnreads = unreadCountByChannel[ch.id] || 0;
 
-          {connectedChannelTypes.includes('instagram') && (
-            <button
-              id="channel-instagram"
-              onClick={() => onChannelChange(selectedChannel === 'instagram' && connectedChannelTypes.length > 1 ? 'all' : 'instagram')}
-              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap cursor-pointer ${
-                selectedChannel === 'instagram' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
-                  ? 'bg-gradient-to-r from-purple-600 to-rose-600 text-white font-semibold'
-                  : darkMode
-                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
-                  : 'bg-[#e9edef] text-[#54656f]'
-              }`}
-            >
-              <Instagram className="w-3 h-3" />
-              <span>Instagram</span>
-            </button>
-          )}
-
-          {connectedChannelTypes.includes('telegram') && (
-            <button
-              id="channel-telegram"
-              onClick={() => onChannelChange(selectedChannel === 'telegram' && connectedChannelTypes.length > 1 ? 'all' : 'telegram')}
-              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap cursor-pointer ${
-                selectedChannel === 'telegram' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
-                  ? 'bg-[#0088cc] text-white font-semibold'
-                  : darkMode
-                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
-                  : 'bg-[#e9edef] text-[#54656f]'
-              }`}
-            >
-              <TelegramIcon className="w-3 h-3" />
-              <span>Telegram</span>
-            </button>
-          )}
-
-          {connectedChannelTypes.includes('webchat') && (
-            <button
-              id="channel-webchat"
-              onClick={() => onChannelChange(selectedChannel === 'webchat' && connectedChannelTypes.length > 1 ? 'all' : 'webchat')}
-              className={`px-2.5 py-0.5 rounded-full text-[11px] font-medium flex items-center gap-1 transition-all whitespace-nowrap cursor-pointer ${
-                selectedChannel === 'webchat' || (connectedChannelTypes.length === 1 && selectedChannel === 'all')
-                  ? 'bg-blue-600 text-white font-semibold'
-                  : darkMode
-                  ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef]'
-                  : 'bg-[#e9edef] text-[#54656f]'
-              }`}
-            >
-              <Globe className="w-3 h-3" />
-              <span>Chat Site</span>
-            </button>
-          )}
+            return (
+              <button
+                key={ch.id}
+                id={`channel-${ch.id}`}
+                type="button"
+                onClick={() =>
+                  onChannelChange(
+                    isSelected && connectedChannelsList.length > 1 ? 'all' : ch.id
+                  )
+                }
+                className={`px-2.5 py-1 rounded-full text-[11px] font-medium flex items-center gap-1.5 transition-all whitespace-nowrap cursor-pointer shrink-0 ${
+                  isSelected
+                    ? ch.type === 'instagram'
+                      ? 'bg-gradient-to-r from-purple-600 to-rose-600 text-white font-semibold shadow-xs'
+                      : ch.type === 'telegram'
+                      ? 'bg-[#0088cc] text-white font-semibold shadow-xs'
+                      : ch.type === 'webchat'
+                      ? 'bg-blue-600 text-white font-semibold shadow-xs'
+                      : 'bg-[#25d366] text-white font-semibold shadow-xs'
+                    : darkMode
+                    ? 'bg-[#202c33] text-[#8696a0] hover:text-[#e9edef] hover:bg-[#2a3942]'
+                    : 'bg-[#e9edef] text-[#54656f] hover:bg-gray-200'
+                }`}
+                title={`Filtrar conversas do canal: ${ch.name}`}
+              >
+                {ch.type === 'instagram' ? (
+                  <Instagram className="w-3 h-3 shrink-0" />
+                ) : ch.type === 'telegram' ? (
+                  <TelegramIcon className="w-3 h-3 shrink-0" />
+                ) : ch.type === 'webchat' ? (
+                  <Globe className="w-3 h-3 shrink-0" />
+                ) : (
+                  <MessageSquare className="w-3 h-3 shrink-0" />
+                )}
+                <span className="truncate max-w-[140px]">{ch.name}</span>
+                {channelUnreads > 0 && (
+                  <span
+                    className={`px-1.5 py-0.2 rounded-full text-[9px] font-bold ${
+                      isSelected ? 'bg-white/25 text-white' : 'bg-[#00a884] text-white'
+                    }`}
+                  >
+                    {channelUnreads}
+                  </span>
+                )}
+              </button>
+            );
+          })}
 
           {/* Botão de Adicionar (+) ao lado do canal existente */}
           {onOpenChannels && (

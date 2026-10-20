@@ -41,8 +41,8 @@ import { supabase, isSupabaseConfigured, ensureSupabaseConfig } from '../lib/sup
 interface ChannelsSidebarProps {
   darkMode: boolean;
   onBackToChats: () => void;
-  onFilterByChannel: (channel: ChannelType | 'all') => void;
-  currentChannelFilter: ChannelType | 'all';
+  onFilterByChannel: (channel: ChannelType | 'all' | string) => void;
+  currentChannelFilter: ChannelType | 'all' | string;
   currentAccount?: Account | null;
   isAIActiveGlobal?: boolean;
   onToggleAIGlobal?: (newStatus: boolean) => void;
@@ -1027,7 +1027,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
         {/* List of Channels */}
         <div className="space-y-2.5">
           {channels.map((channel) => {
-            const isSelected = currentChannelFilter === channel.type;
+            const isSelected = currentChannelFilter === channel.id || currentChannelFilter === channel.type;
             return (
               <div
                 key={channel.id}
@@ -1211,7 +1211,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
 
                       <button
                         onClick={() => {
-                          onFilterByChannel(channel.type);
+                          onFilterByChannel(channel.id);
                           onBackToChats();
                         }}
                         className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors cursor-pointer ${
