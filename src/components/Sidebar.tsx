@@ -25,9 +25,18 @@ import {
   Archive,
   ArchiveRestore,
   FolderArchive,
-  ArrowLeft
+  ArrowLeft,
+  Filter
 } from 'lucide-react';
-import { Conversation, ChannelType, ConversationStatus, Account } from '../types';
+import { Conversation, ChannelType, ConversationStatus, Account, CRMStage } from '../types';
+
+export const CRM_STAGES: Array<{ key: CRMStage; label: string; color: string }> = [
+  { key: 'novo_lead', label: '1. Novo Lead', color: '#3b82f6' },
+  { key: 'qualificado', label: '2. Qualificado', color: '#6366f1' },
+  { key: 'agendado', label: '3. Agendado', color: '#f59e0b' },
+  { key: 'ganho', label: '4. Ganho (Fechado)', color: '#10b981' },
+  { key: 'perdido', label: '5. Perdido', color: '#ef4444' },
+];
 import { formatSaoPauloDate, formatAudioDuration } from '../utils/dateFormat';
 import { TopMoreMenuDropdown } from './TopMoreMenuDropdown';
 import { ConversationContextMenu } from './ConversationContextMenu';
@@ -158,6 +167,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
   } | null>(null);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
 
+  // Filtro por Estágio do Funil do CRM
+  const [selectedCrmStage, setSelectedCrmStage] = useState<CRMStage | 'all'>('all');
+  const [isCrmFilterOpen, setIsCrmFilterOpen] = useState(false);
+  const crmFilterRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (crmFilterRef.current && !crmFilterRef.current.contains(e.target as Node)) {
+        setIsCrmFilterOpen(false);
+      }
+    };
+    if (isCrmFilterOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isCrmFilterOpen]);
+
   const showToast = (msg: string) => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     setToastMessage(msg);
@@ -167,7 +195,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   };
 
   // Busca canais internos da conta caso não venham preenchidos via prop
-  const [internalChannels, setInternalChannels] = useState<Array<{ id: string; name: string; type: ChannelType }>>([]);
+  const [internalChannels, setInternalChannels] = useState<Array<{ id: string; name: string; type: ChannelType; config?: any }>>([]);
 
   useEffect(() => {
     if (!currentAccount?.id) {
@@ -183,7 +211,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         .map((a) => a.id)
         .filter((id) => Boolean(id) && id !== 'all');
 
-      let query = supabase.from('channels').select('id, name, type, is_active, account_id');
+      let query = supabase.from('channels').select('id, name, type, is_active, account_id, config');
       if (currentAccount.id === 'all') {
         if (userAccountIds.length > 0) {
           query = query.in('account_id', userAccountIds);
@@ -307,6 +335,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
     return counts;
   }, [activeConversations, connectedChannelsList]);
 
+  // Contagem de conversas por estágio do CRM
+  const crmStageCounts = useMemo(() => {
+    const counts: Record<string, number> = {
+      all: baseConversations.length,
+      novo_lead: 0,
+      qualificado: 0,
+      agendado: 0,
+      ganho: 0,
+      perdido: 0,
+    };
+    for (const conv of baseConversations) {
+      const rawStage = (conv.crmStage || (conv.contact?.crm?.dealStage as string) || 'novo_lead').toLowerCase();
+      const stage: CRMStage =
+        rawStage === 'lead' || rawStage === 'novo_lead' ? 'novo_lead' :
+        rawStage === 'contacted' || rawStage === 'qualificado' ? 'qualificado' :
+        rawStage === 'proposal' || rawStage === 'negotiation' || rawStage === 'agendado' ? 'agendado' :
+        rawStage === 'won' || rawStage === 'ganho' ? 'ganho' :
+        rawStage === 'lost' || rawStage === 'perdido' ? 'perdido' :
+        'novo_lead';
+      counts[stage] = (counts[stage] || 0) + 1;
+    }
+    return counts;
+  }, [baseConversations]);
+
   // Filter conversations
   const filteredConversations = baseConversations.filter((conv) => {
     if (!isViewingArchived) {
@@ -336,6 +388,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
             return false;
           }
         }
+      }
+
+      // CRM Stage filter
+      if (selectedCrmStage !== 'all') {
+        const rawStage = (conv.crmStage || (conv.contact?.crm?.dealStage as string) || 'novo_lead').toLowerCase();
+        const stage: CRMStage =
+          rawStage === 'lead' || rawStage === 'novo_lead' ? 'novo_lead' :
+          rawStage === 'contacted' || rawStage === 'qualificado' ? 'qualificado' :
+          rawStage === 'proposal' || rawStage === 'negotiation' || rawStage === 'agendado' ? 'agendado' :
+          rawStage === 'won' || rawStage === 'ganho' ? 'ganho' :
+          rawStage === 'lost' || rawStage === 'perdido' ? 'perdido' :
+          'novo_lead';
+        if (stage !== selectedCrmStage) return false;
       }
 
       // Status / Category filter
@@ -679,10 +744,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       )}
 
-      {/* Search Input Box */}
-      <div className="px-3 pt-2 pb-1.5">
+      {/* Search Input Box com Filtro de Funil do CRM */}
+      <div className="px-3 pt-2 pb-1.5 flex items-center gap-1.5">
         <div
-          className={`flex items-center gap-3 px-3 py-1.5 rounded-lg border ${
+          className={`flex-1 flex items-center gap-2.5 px-3 py-1.5 rounded-lg border transition-all ${
             darkMode ? 'bg-[#202c33] border-transparent text-[#e9edef]' : 'bg-[#f0f2f5] border-transparent text-[#111b21]'
           }`}
         >
@@ -704,7 +769,144 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </button>
           )}
         </div>
+
+        {/* Botão de Filtro do Funil do CRM */}
+        <div className="relative">
+          <button
+            id="btn-filter-crm"
+            type="button"
+            onClick={() => setIsCrmFilterOpen((prev) => !prev)}
+            className={`p-2 rounded-lg transition-all relative flex items-center justify-center ${
+              selectedCrmStage !== 'all'
+                ? 'bg-[#00a884] text-white shadow-xs'
+                : isCrmFilterOpen
+                ? darkMode
+                  ? 'bg-[#374248] text-[#e9edef]'
+                  : 'bg-gray-200 text-[#111b21]'
+                : darkMode
+                ? 'bg-[#202c33] hover:bg-[#374248] text-[#8696a0] hover:text-[#e9edef]'
+                : 'bg-[#f0f2f5] hover:bg-gray-200 text-[#54656f] hover:text-black'
+            }`}
+            title="Filtrar conversas pelo Funil do CRM"
+          >
+            <Filter className="w-4 h-4" />
+            {selectedCrmStage !== 'all' && (
+              <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-amber-400 rounded-full border-2 border-[#111b21]" />
+            )}
+          </button>
+
+          {/* CRM Filter Dropdown Popover */}
+          {isCrmFilterOpen && (
+            <div
+              ref={crmFilterRef}
+              className={`absolute right-0 top-full mt-2 w-64 rounded-xl shadow-2xl border z-50 overflow-hidden animate-in fade-in zoom-in-95 duration-150 ${
+                darkMode ? 'bg-[#202c33] border-[#222e35] text-[#e9edef]' : 'bg-white border-gray-200 text-[#111b21]'
+              }`}
+            >
+              <div
+                className={`px-3 py-2.5 border-b flex items-center justify-between ${
+                  darkMode ? 'border-[#2a3942] bg-[#111b21]/40' : 'border-gray-100 bg-gray-50'
+                }`}
+              >
+                <div className="flex items-center gap-1.5">
+                  <Filter className="w-3.5 h-3.5 text-[#00a884]" />
+                  <span className="font-semibold text-xs">Funil de Vendas CRM</span>
+                </div>
+                {selectedCrmStage !== 'all' && (
+                  <button
+                    onClick={() => {
+                      setSelectedCrmStage('all');
+                      setIsCrmFilterOpen(false);
+                    }}
+                    className="text-[10px] text-[#00a884] hover:underline font-medium"
+                  >
+                    Limpar
+                  </button>
+                )}
+              </div>
+
+              <div className="p-1.5 space-y-0.5 text-xs">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedCrmStage('all');
+                    setIsCrmFilterOpen(false);
+                  }}
+                  className={`w-full px-2.5 py-1.5 rounded-lg flex items-center justify-between transition-colors ${
+                    selectedCrmStage === 'all'
+                      ? darkMode
+                        ? 'bg-[#111b21] text-[#00a884] font-semibold'
+                        : 'bg-emerald-50 text-[#00a884] font-semibold'
+                      : darkMode
+                      ? 'hover:bg-[#111b21]/60 text-[#d1d7db]'
+                      : 'hover:bg-gray-100 text-[#111b21]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-gray-400" />
+                    <span>Todas as Etapas</span>
+                  </div>
+                  <span className="text-[11px] text-[#8696a0] font-mono">{crmStageCounts.all}</span>
+                </button>
+
+                {CRM_STAGES.map((stage) => {
+                  const isSelected = selectedCrmStage === stage.key;
+                  const count = crmStageCounts[stage.key] || 0;
+                  return (
+                    <button
+                      key={stage.key}
+                      type="button"
+                      onClick={() => {
+                        setSelectedCrmStage(stage.key);
+                        setIsCrmFilterOpen(false);
+                      }}
+                      className={`w-full px-2.5 py-1.5 rounded-lg flex items-center justify-between transition-colors ${
+                        isSelected
+                          ? darkMode
+                            ? 'bg-[#111b21] font-semibold'
+                            : 'bg-gray-100 font-semibold'
+                          : darkMode
+                          ? 'hover:bg-[#111b21]/60 text-[#d1d7db]'
+                          : 'hover:bg-gray-100 text-[#111b21]'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: stage.color }} />
+                        <span className={isSelected ? 'text-[#00a884]' : ''}>{stage.label}</span>
+                      </div>
+                      <span className="text-[11px] text-[#8696a0] font-mono">{count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* Active CRM filter chip indicator (if filter is applied) */}
+      {selectedCrmStage !== 'all' && (
+        <div className="px-3 pb-1 flex items-center gap-1.5">
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] bg-[#00a884]/15 text-[#00a884] border border-[#00a884]/30">
+            <span
+              className="w-2 h-2 rounded-full"
+              style={{
+                backgroundColor: CRM_STAGES.find((s) => s.key === selectedCrmStage)?.color || '#00a884',
+              }}
+            />
+            <span className="font-semibold">
+              Funil: {CRM_STAGES.find((s) => s.key === selectedCrmStage)?.label} ({filteredConversations.length})
+            </span>
+            <button
+              onClick={() => setSelectedCrmStage('all')}
+              className="p-0.5 hover:bg-[#00a884]/20 rounded-full transition-colors ml-0.5"
+              title="Remover filtro de funil"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Omnichannel Channel Filter Tabs - Logo abaixo da caixa de pesquisa */}
       {connectedChannelsList.length > 0 && (

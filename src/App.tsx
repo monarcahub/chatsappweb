@@ -95,6 +95,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
     toggleMarkUnread,
     updateContact,
     simulateWebhookIncoming,
+    startNewConversation,
     isConnectedToSupabase,
     realtimeLatencyMs,
   } = useSupabaseChat(null, currentAccount?.id || '', user, availableAccounts);
@@ -145,7 +146,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
 
       // 1. Consulta direta ao Supabase
       if (isSupabaseConfigured) {
-        let query = supabase.from('channels').select('id, name, type, is_active');
+        let query = supabase.from('channels').select('id, name, type, is_active, config');
         if (currentAccount.id === 'all') {
           if (userAccountIds.length > 0) {
             query = query.in('account_id', userAccountIds);
@@ -715,7 +716,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
         darkMode={darkMode}
       />
 
-      {/* Webhook Simulator Modal */}
+      {/* New Chat & Webhook Simulator Modal */}
       <NewChatModal
         isOpen={isNewChatModalOpen}
         onClose={() => setIsNewChatModalOpen(false)}
@@ -727,6 +728,11 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
             messageText: data.messageText,
           });
         }}
+        onStartNewChat={startNewConversation}
+        connectedChannels={connectedChannels}
+        existingConversations={conversations}
+        currentAccountId={currentAccount?.id}
+        allowedAccountIds={(availableAccounts || []).map((a) => a.id).filter(Boolean)}
         darkMode={darkMode}
       />
 

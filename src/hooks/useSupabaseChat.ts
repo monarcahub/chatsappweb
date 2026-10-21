@@ -1566,6 +1566,233 @@ export function useSupabaseChat(
     [conversations, currentAccountId]
   );
 
+  // Iniciar nova conversa ativa (Outbound) com busca/criação de contato e mensagem inicial ou template
+  const startNewConversation = useCallback(
+    async (params: {
+      contactId?: string;
+      name: string;
+      phone?: string;
+      email?: string;
+      channelId: string;
+      channelType: ChannelType;
+      messageText: string;
+      isTemplate?: boolean;
+      templateName?: string;
+    }): Promise<string> => {
+      const now = new Date();
+      const nowIso = now.toISOString();
+      const timeStr = formatSaoPauloTime(now);
+
+      const targetAccountId =
+        currentAccountId !== 'all' ? currentAccountId : allowedAccountIds[0] || '';
+
+      let contactId = params.contactId;
+      let contactObj: any = null;
+
+      if (isSupabaseConfigured) {
+        try {
+          if (contactId) {
+            const { data } = await supabase.from('contacts').select('*').eq('id', contactId).maybeSingle();
+            contactObj = data;
+          } else if (params.phone) {
+            // Buscar por telefone no Supabase
+            const cleanPhone = params.phone.replace(/\D/g, '');
+            let q = supabase.from('contacts').select('*');
+            if (targetAccountId) {
+              q = q.eq('account_id', targetAccountId);
+            }
+            const { data } = await q;
+            if (data && data.length > 0) {
+              const matched = data.find((c: any) => {
+                const cClean = (c.phone || c.whatsapp_phone || '').replace(/\D/g, '');
+                return cClean && (cClean === cleanPhone || cClean.endsWith(cleanPhone) || cleanPhone.endsWith(cClean));
+              });
+              if (matched) {
+                contactObj = matched;
+                contactId = matched.id;
+              }
+            }
+          }
+
+          // Se ainda não existe contato, insere no Supabase
+          if (!contactId) {
+            const newContactPayload: any = {
+              name: params.name,
+              phone: params.phone || null,
+              email: params.email || null,
+              avatar_url: `https://ui-avatars.com/api/?name=${encodeURIComponent(params.name)}&background=00a884&color=fff`,
+              created_at: nowIso,
+            };
+            if (targetAccountId) {
+              newContactPayload.account_id = targetAccountId;
+            }
+            const { data: insertedContact, error: insErr } = await supabase
+              .from('contacts')
+              .insert(newContactPayload)
+              .select('*')
+              .maybeSingle();
+
+            if (insertedContact) {
+              contactObj = insertedContact;
+              contactId = insertedContact.id;
+            } else if (insErr) {
+              console.warn('Erro ao inserir novo contato no Supabase:', insErr.message);
+            }
+          }
+        } catch (e) {
+          console.warn('Erro ao verificar/salvar contato:', e);
+        }
+      }
+
+      // Procura se já existe uma conversa localmente ou no banco para este contato e canal
+      let targetConv = conversationsRef.current.find((c) => {
+        const matchContact = contactId
+          ? c.contactId === contactId || c.contact?.id === contactId
+          : c.contact?.name.toLowerCase() === params.name.toLowerCase() ||
+            (params.phone && c.contact?.phone && c.contact.phone.replace(/\D/g, '') === params.phone.replace(/\D/g, ''));
+        const matchChannel = c.channelId === params.channelId || c.contact?.channel === params.channelType;
+        return matchContact && matchChannel;
+      });
+
+      let convId = targetConv?.id;
+
+      if (!convId && isSupabaseConfigured) {
+        try {
+          if (contactId) {
+            const { data: existingDbConv } = await supabase
+              .from('conversations')
+              .select('id')
+              .eq('contact_id', contactId)
+              .eq('channel_id', params.channelId)
+              .maybeSingle();
+
+            if (existingDbConv) {
+              convId = existingDbConv.id;
+            }
+          }
+
+          if (!convId) {
+            const newConvUuid =
+              typeof crypto !== 'undefined' && crypto.randomUUID
+                ? crypto.randomUUID()
+                : '00000000-0000-4000-8000-' + Date.now().toString(16).padStart(12, '0');
+
+            const convPayload: any = {
+              id: newConvUuid,
+              contact_id: contactId || null,
+              channel_id: params.channelId,
+              status: 'human',
+              crm_stage: 'novo_lead',
+              unread_count: 0,
+              last_message_text: params.messageText,
+              last_message_at: nowIso,
+            };
+            if (targetAccountId) {
+              convPayload.account_id = targetAccountId;
+            }
+
+            const { data: createdConv, error: createConvErr } = await supabase
+              .from('conversations')
+              .insert(convPayload)
+              .select('*')
+              .maybeSingle();
+
+            if (createdConv) {
+              convId = createdConv.id;
+            } else if (!createConvErr) {
+              convId = newConvUuid;
+            }
+          }
+        } catch (e) {
+          console.warn('Erro ao criar conversa no banco:', e);
+        }
+      }
+
+      if (!convId) {
+        convId = `conv-new-${Date.now()}`;
+      }
+
+      // Adiciona ao estado local se ainda não existir
+      const resolvedContactId = contactId || `cont-${Date.now()}`;
+      const newConvObj: Conversation = {
+        id: convId,
+        accountId: targetAccountId,
+        contactId: resolvedContactId,
+        channelId: params.channelId,
+        status: 'human',
+        crmStage: 'novo_lead',
+        contact: {
+          id: resolvedContactId,
+          name: params.name,
+          phone: params.phone,
+          email: params.email,
+          avatarUrl:
+            contactObj?.avatar_url ||
+            `https://ui-avatars.com/api/?name=${encodeURIComponent(params.name)}&background=00a884&color=fff`,
+          channel: params.channelType,
+          channelId: params.channelId,
+          coexistenceEnabled: true,
+          aiStatus: 'inactive',
+          crm: { dealStage: 'novo_lead', notes: [] },
+          tags: [INITIAL_TAGS[0] || { id: 'tag-atendimento', name: 'Atendimento Humano', color: '#00a884' }],
+        },
+        lastMessage: {
+          text: params.messageText,
+          timestamp: timeStr,
+          senderType: 'agent',
+          status: 'sent',
+          contentType: params.isTemplate ? 'template' : 'text',
+        },
+        unreadCount: 0,
+        isPinned: false,
+        isArchived: false,
+        isFavorite: false,
+        isGroup: false,
+        updatedAt: nowIso,
+        lastMessageAt: nowIso,
+      };
+
+      setConversations((prev) => {
+        const existing = prev.find((c) => c.id === convId);
+        if (existing) {
+          return prev.map((c) =>
+            c.id === convId
+              ? {
+                  ...c,
+                  status: 'human',
+                  lastMessage: {
+                    text: params.messageText,
+                    timestamp: timeStr,
+                    senderType: 'agent',
+                    status: 'sent',
+                    contentType: params.isTemplate ? 'template' : 'text',
+                  },
+                  updatedAt: nowIso,
+                  lastMessageAt: nowIso,
+                }
+              : c
+          );
+        }
+        return [newConvObj, ...prev];
+      });
+
+      // Seleciona a conversa imediatamente no app
+      selectConversation(convId);
+
+      // Dispara a mensagem inicial
+      await sendMessage(
+        convId,
+        params.messageText,
+        params.isTemplate ? 'template' : 'text',
+        undefined,
+        params.isTemplate ? { templateName: params.templateName, isMetaTemplate: true } : undefined
+      );
+
+      return convId;
+    },
+    [currentAccountId, allowedAccountIds, isSupabaseConfigured, selectConversation, sendMessage]
+  );
+
   return {
     conversations,
     messages,
@@ -1576,6 +1803,7 @@ export function useSupabaseChat(
     selectConversation,
     setSelectedId: selectConversation,
     sendMessage,
+    startNewConversation,
     updateConversationStatus,
     updateCRMStage,
     addNote,
