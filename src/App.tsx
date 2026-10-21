@@ -84,6 +84,8 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
     addNote,
     addTag,
     removeTag,
+    createCustomTag,
+    allTags,
     clearMessages,
     markAllAsRead,
     deleteSelectedMessages,
@@ -122,7 +124,6 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
 
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isAppLocked, setIsAppLocked] = useState(false);
-  const [allTags] = useState<Tag[]>(INITIAL_TAGS);
   const [channelsCount, setChannelsCount] = useState<number | null>(null);
   const [connectedChannels, setConnectedChannels] = useState<
     Array<{ id: string; name: string; type: ChannelType; is_active?: boolean }>
@@ -676,6 +677,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               availableTags={allTags}
               onAddTag={(tag) => selectedConversation && addTag(selectedConversation.id, tag)}
               onRemoveTag={(tagId) => selectedConversation && removeTag(selectedConversation.id, tagId)}
+              onCreateCustomTag={createCustomTag}
             />
           )}
         </div>
@@ -702,6 +704,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               onRemoveTag={(tagId) => removeTag(selectedConversation.id, tagId)}
               onAddNote={(noteText) => addNote(selectedConversation.id, noteText)}
               availableTags={allTags}
+              onCreateCustomTag={createCustomTag}
               darkMode={darkMode}
               onUpdateContactName={(newName) => updateContact(selectedConversation.id, { name: newName })}
             />

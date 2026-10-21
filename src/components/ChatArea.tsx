@@ -46,6 +46,7 @@ import {
   FileText,
   Headphones,
   Loader2,
+  Plus,
 } from 'lucide-react';
 import { Conversation, Message, ConversationStatus, Tag, MessageContentType } from '../types';
 import { WhatsAppWallpaper } from './WhatsAppWallpaper';
@@ -77,8 +78,9 @@ interface ChatAreaProps {
   onToggleFavorite?: (conversationId: string) => void;
   onToggleArchive?: (conversationId: string) => void;
   availableTags?: Tag[];
-  onAddTag?: (tag) => void;
+  onAddTag?: (tag: Tag) => void;
   onRemoveTag?: (tagId: string) => void;
+  onCreateCustomTag?: (name: string, color?: string) => Tag;
 }
 
 export const ChatArea: React.FC<ChatAreaProps> = ({
@@ -99,10 +101,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   availableTags = [],
   onAddTag,
   onRemoveTag,
+  onCreateCustomTag,
 }) => {
   const [inputText, setInputText] = useState('');
   const [textSelection, setTextSelection] = useState<{ start: number; end: number } | null>(null);
   const [showTranscriptionMap, setShowTranscriptionMap] = useState<Record<string, boolean>>({});
+  const [isCreatingNewTagInModal, setIsCreatingNewTagInModal] = useState(false);
+  const [newTagNameModal, setNewTagNameModal] = useState('');
+  const [newTagColorModal, setNewTagColorModal] = useState('#00a884');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -2366,13 +2372,88 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
               </button>
             </div>
 
-            <p className="text-xs text-[#8696a0] mb-4">
-              Selecione as listas de transmissão ou etiquetas de funil para o contato <strong>{contact.name}</strong>:
-            </p>
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-xs text-[#8696a0]">
+                Selecione as etiquetas para o contato <strong>{contact.name}</strong>:
+              </p>
+              <button
+                type="button"
+                onClick={() => setIsCreatingNewTagInModal(!isCreatingNewTagInModal)}
+                className="text-xs text-[#00a884] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>{isCreatingNewTagInModal ? 'Fechar' : '+ Nova Etiqueta'}</span>
+              </button>
+            </div>
+
+            {/* Form de criação de nova etiqueta */}
+            {isCreatingNewTagInModal && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!newTagNameModal.trim()) return;
+                  let created: Tag;
+                  if (onCreateCustomTag) {
+                    created = onCreateCustomTag(newTagNameModal.trim(), newTagColorModal);
+                  } else {
+                    created = {
+                      id: `tag-${Date.now()}`,
+                      name: newTagNameModal.trim(),
+                      color: newTagColorModal,
+                      textColor: '#ffffff',
+                    };
+                  }
+                  onAddTag?.(created);
+                  setNewTagNameModal('');
+                  setIsCreatingNewTagInModal(false);
+                }}
+                className={`p-3 mb-3 rounded-xl border space-y-2 ${
+                  darkMode ? 'bg-[#182229] border-[#2a3942]' : 'bg-gray-50 border-gray-200'
+                }`}
+              >
+                <div className="text-xs font-bold flex items-center justify-between">
+                  <span>Criar Nova Etiqueta Personalizada</span>
+                </div>
+                <input
+                  type="text"
+                  required
+                  value={newTagNameModal}
+                  onChange={(e) => setNewTagNameModal(e.target.value)}
+                  placeholder="Nome da etiqueta (ex: VIP, Em Negociação, Urgente)..."
+                  className={`w-full p-2 rounded-lg text-xs border focus:outline-none focus:border-[#00a884] ${
+                    darkMode ? 'bg-[#202c33] border-[#313d45] text-[#e9edef]' : 'bg-white border-gray-300 text-gray-900'
+                  }`}
+                />
+                <div className="flex items-center justify-between pt-1">
+                  <div className="flex items-center gap-1.5">
+                    {['#00a884', '#3b82f6', '#6366f1', '#8b5cf6', '#ec4899', '#f59e0b', '#ef4444', '#06b6d4', '#64748b'].map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        onClick={() => setNewTagColorModal(c)}
+                        style={{ backgroundColor: c }}
+                        className={`w-5 h-5 rounded-full transition-transform flex items-center justify-center cursor-pointer ${
+                          newTagColorModal === c ? 'scale-125 ring-2 ring-white ring-offset-1 shadow' : 'hover:scale-110'
+                        }`}
+                      >
+                        {newTagColorModal === c && <Check className="w-3 h-3 text-white" />}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={!newTagNameModal.trim()}
+                    className="px-3 py-1 rounded-md text-xs font-bold bg-[#00a884] text-white disabled:opacity-50 cursor-pointer"
+                  >
+                    Salvar e Atribuir
+                  </button>
+                </div>
+              </form>
+            )}
 
             <div className="space-y-2 mb-6 max-h-56 overflow-y-auto pr-1">
               {availableTags.map((tag) => {
-                const isSelected = (contact.tags || []).some((t) => t.id === tag.id);
+                const isSelected = (contact.tags || []).some((t) => t.id === tag.id || t.name.toLowerCase() === tag.name.toLowerCase());
                 return (
                   <label
                     key={tag.id}
@@ -2394,7 +2475,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     <div className="flex items-center gap-2">
                       <span
                         className="w-3 h-3 rounded-full shrink-0"
-                        style={{ backgroundColor: tag.textColor || '#00a884' }}
+                        style={{ backgroundColor: tag.color || tag.textColor || '#00a884' }}
                       />
                       <span className="text-xs font-semibold">{tag.name}</span>
                     </div>

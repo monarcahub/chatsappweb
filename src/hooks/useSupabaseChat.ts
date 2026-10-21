@@ -24,6 +24,7 @@ import {
 } from '../utils/notifications';
 
 const ARCHIVED_STORAGE_KEY = 'chatsapp_archived_conv_ids';
+const TAGS_STORAGE_KEY = 'chatsapp_custom_tags_v1';
 
 const getStoredArchivedIds = (): Set<string> => {
   if (typeof window === 'undefined') return new Set();
@@ -33,6 +34,22 @@ const getStoredArchivedIds = (): Set<string> => {
   } catch {
     return new Set();
   }
+};
+
+const getStoredTags = (): Tag[] => {
+  if (typeof window === 'undefined') return INITIAL_TAGS;
+  try {
+    const raw = localStorage.getItem(TAGS_STORAGE_KEY);
+    if (!raw) return INITIAL_TAGS;
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      const map = new Map<string, Tag>();
+      INITIAL_TAGS.forEach((t) => map.set(t.name.toLowerCase(), t));
+      parsed.forEach((t) => map.set(t.name.toLowerCase(), t));
+      return Array.from(map.values());
+    }
+  } catch {}
+  return INITIAL_TAGS;
 };
 
 export function useSupabaseChat(
@@ -45,7 +62,9 @@ export function useSupabaseChat(
   const [messages, setMessages] = useState<Record<string, Message[]>>({});
   const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId);
   const [isConnectedToSupabase, setIsConnectedToSupabase] = useState(isSupabaseConfigured);
-  const [allTags, setAllTags] = useState<Tag[]>(INITIAL_TAGS);
+  const [allTags, setAllTags] = useState<Tag[]>(getStoredTags);
+  const allTagsRef = useRef<Tag[]>(allTags);
+  allTagsRef.current = allTags;
   const [realtimeLatencyMs, setRealtimeLatencyMs] = useState<number | null>(null);
 
   // Lista de IDs de contas autorizadas para este usuário logado (exclui opção 'all')
@@ -468,11 +487,18 @@ export function useSupabaseChat(
                   assignedAgent: 'Atendente Atual',
                   notes: row.notes ? [{ id: '1', text: row.notes, createdAt: formatSaoPauloDate(row.last_message_at), author: 'Sistema' }] : [],
                 },
-                tags: (row.tags || []).map((t: string, i: number) => ({
-                  id: `tag-${i}`,
-                  name: t,
-                  color: '#1e3a8a',
-                })),
+                tags: (row.tags || []).map((t: string, i: number) => {
+                  const existing = allTagsRef.current.find(
+                    (at) => at.name.toLowerCase() === t.toLowerCase()
+                  );
+                  return (
+                    existing || {
+                      id: `tag-${t.toLowerCase().replace(/\s+/g, '-')}`,
+                      name: t,
+                      color: '#00a884',
+                    }
+                  );
+                }),
               },
               lastMessage: {
                 text: row.last_message_text || (isAudioMsg ? 'audio' : latestMsg?.content || 'Conversa iniciada'),
@@ -1180,17 +1206,50 @@ export function useSupabaseChat(
     []
   );
 
-  // Adicionar Tag
-  const addTag = useCallback((conversationId: string, tag: Tag) => {
+  // Criar nova etiqueta personalizada (custom tag)
+  const createCustomTag = useCallback((name: string, color?: string): Tag => {
+    const trimmed = name.trim();
+    if (!trimmed) return INITIAL_TAGS[0];
+
+    const existing = allTagsRef.current.find(
+      (t) => t.name.toLowerCase() === trimmed.toLowerCase()
+    );
+    if (existing) return existing;
+
+    const newTag: Tag = {
+      id: `custom-tag-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      name: trimmed,
+      color: color || '#00a884',
+      textColor: '#ffffff',
+    };
+
+    setAllTags((prev) => {
+      const updated = [...prev, newTag];
+      try {
+        localStorage.setItem(TAGS_STORAGE_KEY, JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    return newTag;
+  }, []);
+
+  // Adicionar Tag com persistência no Supabase
+  const addTag = useCallback(async (conversationId: string, tag: Tag) => {
+    let finalTagNames: string[] = [];
+
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id === conversationId) {
           const currentTags = c.contact.tags || [];
-          if (currentTags.some((t) => t.id === tag.id)) return c;
+          if (currentTags.some((t) => t.id === tag.id || t.name.toLowerCase() === tag.name.toLowerCase())) {
+            return c;
+          }
           const updatedTags = [...currentTags, tag];
+          finalTagNames = updatedTags.map((t) => t.name);
           return {
             ...c,
-            tags: updatedTags.map((t) => t.name),
+            tags: finalTagNames,
             contact: {
               ...c.contact,
               tags: updatedTags,
@@ -1200,17 +1259,45 @@ export function useSupabaseChat(
         return c;
       })
     );
+
+    // Se a tag criada não estiver em allTags, inclui
+    setAllTags((prev) => {
+      if (prev.some((t) => t.name.toLowerCase() === tag.name.toLowerCase())) return prev;
+      const updated = [...prev, tag];
+      try {
+        localStorage.setItem(TAGS_STORAGE_KEY, JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    // Persiste no Supabase na tabela conversations
+    if (isSupabaseConfigured && supabase && conversationId) {
+      try {
+        const { error } = await supabase
+          .from('conversations')
+          .update({ tags: finalTagNames })
+          .eq('id', conversationId);
+        if (error) {
+          console.warn('Erro ao salvar tag no Supabase:', error.message);
+        }
+      } catch (err) {
+        console.warn('Falha ao persistir tag:', err);
+      }
+    }
   }, []);
 
-  // Remover Tag
-  const removeTag = useCallback((conversationId: string, tagId: string) => {
+  // Remover Tag com persistência no Supabase
+  const removeTag = useCallback(async (conversationId: string, tagId: string) => {
+    let finalTagNames: string[] = [];
+
     setConversations((prev) =>
       prev.map((c) => {
         if (c.id === conversationId) {
           const updatedTags = (c.contact.tags || []).filter((t) => t.id !== tagId);
+          finalTagNames = updatedTags.map((t) => t.name);
           return {
             ...c,
-            tags: updatedTags.map((t) => t.name),
+            tags: finalTagNames,
             contact: {
               ...c.contact,
               tags: updatedTags,
@@ -1220,6 +1307,21 @@ export function useSupabaseChat(
         return c;
       })
     );
+
+    // Persiste no Supabase na tabela conversations
+    if (isSupabaseConfigured && supabase && conversationId) {
+      try {
+        const { error } = await supabase
+          .from('conversations')
+          .update({ tags: finalTagNames })
+          .eq('id', conversationId);
+        if (error) {
+          console.warn('Erro ao remover tag no Supabase:', error.message);
+        }
+      } catch (err) {
+        console.warn('Falha ao atualizar tags no banco:', err);
+      }
+    }
   }, []);
 
   // Limpar mensagens de uma conversa
@@ -1809,6 +1911,7 @@ export function useSupabaseChat(
     addNote,
     addTag,
     removeTag,
+    createCustomTag,
     clearMessages,
     markAllAsRead,
     deleteSelectedMessages,

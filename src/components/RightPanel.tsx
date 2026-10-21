@@ -39,7 +39,21 @@ interface RightPanelProps {
   availableTags: Tag[];
   darkMode: boolean;
   onUpdateContactName?: (name: string) => void;
+  onCreateCustomTag?: (name: string, color?: string) => Tag;
 }
+
+export const PRESET_TAG_COLORS = [
+  '#00a884',
+  '#3b82f6',
+  '#6366f1',
+  '#8b5cf6',
+  '#ec4899',
+  '#f59e0b',
+  '#ef4444',
+  '#06b6d4',
+  '#10b981',
+  '#64748b',
+];
 
 export const RightPanel: React.FC<RightPanelProps> = ({
   contact,
@@ -54,10 +68,14 @@ export const RightPanel: React.FC<RightPanelProps> = ({
   availableTags,
   darkMode,
   onUpdateContactName,
+  onCreateCustomTag,
 }) => {
   const [newNoteText, setNewNoteText] = useState('');
   const [dealValInput, setDealValInput] = useState(contact.crm.dealValue?.toString() || '');
   const [showTagDropdown, setShowTagDropdown] = useState(false);
+  const [isCreatingNewTag, setIsCreatingNewTag] = useState(false);
+  const [newTagNameInput, setNewTagNameInput] = useState('');
+  const [newTagColorInput, setNewTagColorInput] = useState('#00a884');
   const [showJsonPreview, setShowJsonPreview] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
   const [editedName, setEditedName] = useState(contact.name);
@@ -361,23 +379,128 @@ export const RightPanel: React.FC<RightPanelProps> = ({
           </div>
 
           {showTagDropdown && (
-            <div className="p-2 mb-2 rounded-lg bg-[#111b21] border border-gray-700 space-y-1">
-              <span className="text-[10px] text-gray-400 block mb-1">Disponíveis:</span>
-              <div className="flex flex-wrap gap-1">
-                {availableTags.map((tag) => (
-                  <button
-                    key={tag.id}
-                    onClick={() => {
-                      onAddTag(tag);
-                      setShowTagDropdown(false);
-                    }}
-                    style={{ backgroundColor: tag.color, color: tag.textColor || '#fff' }}
-                    className="px-2 py-0.5 rounded text-[10px] font-bold uppercase hover:opacity-90"
-                  >
-                    + {tag.name}
-                  </button>
-                ))}
+            <div
+              className={`p-3 mb-2.5 rounded-xl border space-y-2.5 shadow-lg animate-in fade-in duration-150 ${
+                darkMode ? 'bg-[#182229] border-[#2a3942]' : 'bg-gray-50 border-gray-200'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-[#8696a0]">Etiquetas Disponíveis:</span>
+                <button
+                  type="button"
+                  onClick={() => setIsCreatingNewTag(!isCreatingNewTag)}
+                  className="text-[11px] text-[#00a884] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
+                >
+                  <Plus className="w-3 h-3" />
+                  <span>{isCreatingNewTag ? 'Fechar Criação' : 'Criar Nova'}</span>
+                </button>
               </div>
+
+              {/* Lista de tags existentes */}
+              <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto custom-scrollbar pr-0.5">
+                {availableTags.map((tag) => {
+                  const isAssigned = (contact.tags || []).some(
+                    (t) => t.id === tag.id || t.name.toLowerCase() === tag.name.toLowerCase()
+                  );
+                  return (
+                    <button
+                      key={tag.id}
+                      type="button"
+                      disabled={isAssigned}
+                      onClick={() => {
+                        onAddTag(tag);
+                      }}
+                      style={{
+                        backgroundColor: isAssigned ? '#374248' : tag.color,
+                        color: tag.textColor || '#fff',
+                        opacity: isAssigned ? 0.6 : 1,
+                      }}
+                      className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase transition-all flex items-center gap-1 shadow-xs ${
+                        isAssigned ? 'cursor-not-allowed line-through' : 'hover:scale-105 cursor-pointer'
+                      }`}
+                    >
+                      <span>{isAssigned ? '✓ ' + tag.name : '+ ' + tag.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Formulário para Criar Nova Etiqueta Customizada */}
+              {isCreatingNewTag && (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!newTagNameInput.trim()) return;
+                    let tagToAssign: Tag;
+                    if (onCreateCustomTag) {
+                      tagToAssign = onCreateCustomTag(newTagNameInput.trim(), newTagColorInput);
+                    } else {
+                      tagToAssign = {
+                        id: `tag-${Date.now()}`,
+                        name: newTagNameInput.trim(),
+                        color: newTagColorInput,
+                        textColor: '#ffffff',
+                      };
+                    }
+                    onAddTag(tagToAssign);
+                    setNewTagNameInput('');
+                    setIsCreatingNewTag(false);
+                  }}
+                  className={`pt-2 border-t space-y-2 ${darkMode ? 'border-[#2a3942]' : 'border-gray-200'}`}
+                >
+                  <div className="text-[11px] font-bold text-[#e9edef] flex items-center gap-1">
+                    <span>Criar e Atribuir Nova Etiqueta</span>
+                  </div>
+
+                  <input
+                    type="text"
+                    required
+                    value={newTagNameInput}
+                    onChange={(e) => setNewTagNameInput(e.target.value)}
+                    placeholder="Nome da etiqueta (ex: VIP, Em Negociação)..."
+                    className={`w-full p-2 rounded-lg text-xs border focus:outline-none focus:border-[#00a884] ${
+                      darkMode ? 'bg-[#202c33] border-[#313d45] text-[#e9edef]' : 'bg-white border-gray-300 text-gray-900'
+                    }`}
+                  />
+
+                  {/* Seletor de cores da etiqueta */}
+                  <div>
+                    <span className="text-[10px] text-[#8696a0] block mb-1">Escolha a cor:</span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {PRESET_TAG_COLORS.map((c) => (
+                        <button
+                          key={c}
+                          type="button"
+                          onClick={() => setNewTagColorInput(c)}
+                          style={{ backgroundColor: c }}
+                          className={`w-5 h-5 rounded-full transition-transform flex items-center justify-center cursor-pointer ${
+                            newTagColorInput === c ? 'scale-125 ring-2 ring-white ring-offset-1 shadow' : 'hover:scale-110'
+                          }`}
+                        >
+                          {newTagColorInput === c && <Check className="w-3 h-3 text-white" />}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-1.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setIsCreatingNewTag(false)}
+                      className="px-2.5 py-1 rounded-md text-[11px] text-[#8696a0] hover:bg-[#202c33] cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={!newTagNameInput.trim()}
+                      className="px-3 py-1 rounded-md text-[11px] font-bold bg-[#00a884] hover:bg-[#00a884]/90 text-white disabled:opacity-50 cursor-pointer"
+                    >
+                      Salvar e Atribuir
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
           )}
 
