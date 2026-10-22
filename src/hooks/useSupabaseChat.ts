@@ -196,7 +196,9 @@ export function useSupabaseChat(
       sender_type: row.sender_type || senderType,
       senderName:
         row.sender_name ||
-        (senderType === 'agent'
+        (senderType === 'system'
+          ? 'Sistema'
+          : senderType === 'agent'
           ? 'Atendente Humano'
           : senderType === 'ai'
           ? 'Assistente IA'
@@ -923,10 +925,69 @@ export function useSupabaseChat(
       };
 
       // 1. Atualização Otimista imediata no estado local (< 16ms)
-      setMessages((prev) => ({
-        ...prev,
-        [convId]: [...(prev[convId] || []), newMsg],
-      }));
+      const convBeforeSend = conversationsRef.current.find((c) => c.id === convId);
+      const wasAI = convBeforeSend?.status === 'ai';
+
+      if (wasAI) {
+        const sysUuid =
+          typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `sys-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+        const sysContent = `${senderName} assumiu o atendimento e pausou a IA`;
+        const sysMsg: Message = {
+          id: sysUuid,
+          conversationId: convId,
+          content: sysContent,
+          senderType: 'system',
+          sender_type: 'system',
+          senderName,
+          timestamp: timeStr,
+          createdAt: nowIso,
+          status: 'read',
+          contentType: 'text',
+          metadata: {
+            isSystemEvent: true,
+            eventType: 'takeover',
+            actor: senderName,
+            action: 'assumiu o atendimento e pausou a IA',
+            previousStatus: 'ai',
+            newStatus: 'human',
+          },
+        };
+
+        setMessages((prev) => ({
+          ...prev,
+          [convId]: [...(prev[convId] || []), sysMsg, newMsg],
+        }));
+
+        if (isSupabaseConfigured) {
+          supabase
+            .from('messages')
+            .insert({
+              id: sysUuid,
+              account_id: currentAccountId || (convBeforeSend as any)?.account_id || null,
+              conversation_id: convId,
+              sender_type: 'system',
+              sender_name: senderName,
+              content: sysContent,
+              content_type: 'text',
+              status: 'read',
+              created_at: nowIso,
+              metadata: {
+                isSystemEvent: true,
+                eventType: 'takeover',
+                actor: senderName,
+                action: 'assumiu o atendimento e pausou a IA',
+              },
+            })
+            .then(() => {});
+        }
+      } else {
+        setMessages((prev) => ({
+          ...prev,
+          [convId]: [...(prev[convId] || []), newMsg],
+        }));
+      }
 
       // 2. Mudar status para 'human' automaticamente (Human Takeover)
       setConversations((prev) =>
@@ -1085,9 +1146,53 @@ export function useSupabaseChat(
     [currentAccountId, currentUser]
   );
 
-  // Mudar Status da Conversa: 'ai' | 'human' | 'closed'
+  // Mudar Status da Conversa: 'ai' | 'human' | 'closed' (Human Takeover)
   const updateConversationStatus = useCallback(
     async (conversationId: string, newStatus: ConversationStatus) => {
+      const conv = conversationsRef.current.find((c) => c.id === conversationId);
+      const prevStatus = conv?.status || 'ai';
+      if (prevStatus === newStatus) return;
+
+      const actorName = currentUser?.name || 'Atendente';
+      const nowIso = new Date().toISOString();
+      const messageUuid =
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `sys-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+
+      let actionText = '';
+      if (newStatus === 'human') {
+        actionText = 'assumiu o atendimento e pausou a IA';
+      } else if (newStatus === 'ai') {
+        actionText = 'reativou o atendimento da IA';
+      } else if (newStatus === 'closed') {
+        actionText = 'finalizou o atendimento';
+      }
+
+      const systemContent = `${actorName} ${actionText}`;
+
+      // Cria mensagem de sistema para a timeline com formato de badge do sistema
+      const systemMessage: Message = {
+        id: messageUuid,
+        conversationId,
+        content: systemContent,
+        senderType: 'system',
+        sender_type: 'system',
+        senderName: actorName,
+        timestamp: formatSaoPauloTime(nowIso),
+        createdAt: nowIso,
+        status: 'read',
+        contentType: 'text',
+        metadata: {
+          isSystemEvent: true,
+          eventType: newStatus === 'human' ? 'takeover' : newStatus === 'ai' ? 'resume_ai' : 'close',
+          actor: actorName,
+          action: actionText,
+          previousStatus: prevStatus,
+          newStatus: newStatus,
+        },
+      };
+
       setConversations((prev) =>
         prev.map((c) => {
           if (c.id === conversationId) {
@@ -1104,21 +1209,49 @@ export function useSupabaseChat(
         })
       );
 
+      // Adiciona mensagem de sistema na timeline imediatamente
+      setMessages((prev) => ({
+        ...prev,
+        [conversationId]: [...(prev[conversationId] || []), systemMessage],
+      }));
+
       if (isSupabaseConfigured) {
         try {
+          // 1. Atualiza status na tabela conversations
           await supabase
             .from('conversations')
             .update({
               status: newStatus,
-              updated_at: new Date().toISOString(),
+              updated_at: nowIso,
             })
             .eq('id', conversationId);
+
+          // 2. Persiste mensagem do evento do sistema na tabela messages
+          await supabase.from('messages').insert({
+            id: messageUuid,
+            account_id: currentAccountId || (conv as any)?.account_id || null,
+            conversation_id: conversationId,
+            sender_type: 'system',
+            sender_name: actorName,
+            content: systemContent,
+            content_type: 'text',
+            status: 'read',
+            created_at: nowIso,
+            metadata: {
+              isSystemEvent: true,
+              eventType: newStatus === 'human' ? 'takeover' : newStatus === 'ai' ? 'resume_ai' : 'close',
+              actor: actorName,
+              action: actionText,
+              previousStatus: prevStatus,
+              newStatus: newStatus,
+            },
+          });
         } catch (err) {
-          console.error('Erro ao atualizar status da conversa no Supabase:', err);
+          console.error('Erro ao atualizar status da conversa e registrar evento no Supabase:', err);
         }
       }
     },
-    []
+    [currentAccountId, currentUser]
   );
 
   // Atualizar estágio do CRM

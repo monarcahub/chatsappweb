@@ -1001,7 +1001,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     {onUpdateStatus && (
                       <button
                         id="btn-takeover-human"
-                        onClick={() => onUpdateStatus(conversation.id, 'human')}
+                        onClick={() => {
+                          onUpdateStatus(conversation.id, 'human');
+                        }}
                         className="px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-medium bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 transition-colors flex items-center gap-1 cursor-pointer"
                         title="Assumir conversa: a IA para de responder"
                       >
@@ -1024,7 +1026,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     {onUpdateStatus && (
                       <button
                         id="btn-return-ai"
-                        onClick={() => onUpdateStatus(conversation.id, 'ai')}
+                        onClick={() => {
+                          onUpdateStatus(conversation.id, 'ai');
+                        }}
                         className="px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-medium bg-[#064e3b]/80 hover:bg-[#064e3b] text-[#34d399] border border-[#34d399]/40 transition-colors flex items-center gap-1 cursor-pointer"
                         title="Devolver o atendimento para a IA"
                       >
@@ -1298,6 +1302,62 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
           // DEVE ficar no LADO DIREITO (outgoing / verde WhatsApp).
           // As mensagens do cliente ('customer' / 'contact') ficam no LADO ESQUERDO (incoming / branca WhatsApp).
           const rawSender = String((msg as any).sender_type || msg.senderType || '').toLowerCase().trim();
+          const isSystemMessage =
+            msg.senderType === 'system' ||
+            rawSender === 'system' ||
+            msg.metadata?.isSystemEvent === true;
+
+          // Evento do Sistema na Timeline (ex: "Arthur assumiu o atendimento Oct 22, 2:05 PM")
+          // Estilo fiel à imagem de referência com badge centralizado e arredondado
+          if (isSystemMessage) {
+            const rawDate = msg.createdAt || msg.timestamp;
+            let displayTime = '';
+            try {
+              const d = rawDate ? new Date(rawDate) : new Date();
+              if (!isNaN(d.getTime())) {
+                displayTime =
+                  d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Sao_Paulo' }) +
+                  ', ' +
+                  d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Sao_Paulo' });
+              } else {
+                displayTime = formatSaoPauloTime(rawDate);
+              }
+            } catch {
+              displayTime = formatSaoPauloTime(rawDate);
+            }
+
+            const actor = msg.metadata?.actor || msg.senderName || '';
+            const action =
+              msg.metadata?.action ||
+              (actor && msg.content.startsWith(actor)
+                ? msg.content.slice(actor.length).trim()
+                : msg.content);
+
+            return (
+              <div key={msg.id} className="flex justify-center my-3 px-4 select-none animate-in fade-in duration-200">
+                <div
+                  className={`inline-flex items-center flex-wrap justify-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs shadow-xs text-center max-w-lg leading-normal transition-colors ${
+                    darkMode
+                      ? 'bg-[#202c33] border border-[#2a3942] text-[#d1d7db]'
+                      : 'bg-[#e9edef] border border-[#d1d7db]/70 text-[#54656f]'
+                  }`}
+                >
+                  {actor && (
+                    <span className={`font-semibold ${darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'}`}>
+                      {actor}
+                    </span>
+                  )}
+                  <span>{action}</span>
+                  {displayTime && (
+                    <span className={`text-[11px] ml-1.5 shrink-0 font-normal ${darkMode ? 'text-[#8696a0]' : 'text-[#8696a0]'}`}>
+                      {displayTime}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          }
+
           const isCustomer =
             rawSender === 'customer' ||
             rawSender === 'contact' ||

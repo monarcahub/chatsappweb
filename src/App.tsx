@@ -782,16 +782,17 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
         darkMode={darkMode}
       />
 
-      {/* Floating In-App New Message Notification Popup (WhatsApp Web Style) */}
+      {/* Floating In-App New Message Notification Popup (Posicionado na parte inferior sem bloquear a barra de digitação) */}
       {inAppNotification && (
         <div
           id="in-app-notification-popup"
-          className="fixed top-4 right-4 z-50 max-w-sm sm:max-w-md w-full animate-in fade-in slide-in-from-top-4 duration-200 select-none shadow-2xl drop-shadow-2xl"
+          className="fixed bottom-24 right-4 sm:right-6 z-40 max-w-sm sm:max-w-md w-full animate-in fade-in slide-in-from-bottom-5 duration-200 select-none shadow-2xl drop-shadow-2xl"
         >
           <div
             onClick={() => {
               if (inAppNotification.conversationId) {
                 handleSelectConversation(inAppNotification.conversationId);
+                setInAppNotification(null);
               }
             }}
             className={`p-3.5 rounded-2xl border flex items-start gap-3 cursor-pointer transition-all hover:scale-[1.02] ${
