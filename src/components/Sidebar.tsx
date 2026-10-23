@@ -1462,7 +1462,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
                   {/* Tags (IA_INATIVA / IA_ATIVA / CRM) */}
                   {conv.contact.tags && conv.contact.tags.length > 0 && (
-                    <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                    <div className="flex items-center gap-1 mt-1 flex-wrap">
                       {conv.contact.tags.map((tag) => (
                         <span
                           key={tag.id}
@@ -1470,7 +1470,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             backgroundColor: tag.color,
                             color: tag.textColor || '#ffffff',
                           }}
-                          className="px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wider uppercase border border-white/10"
+                          className="px-1.5 py-[1px] rounded-[3px] text-[7.5px] sm:text-[8px] font-bold tracking-wide uppercase border border-white/10 leading-tight inline-flex items-center"
                         >
                           {tag.name}
                         </span>
