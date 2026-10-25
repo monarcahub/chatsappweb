@@ -60,6 +60,7 @@ interface ConnectedChannelItem {
   status: 'online' | 'syncing' | 'offline';
   latency: string;
   ai_enabled?: boolean;
+  phone?: string;
 }
 
 export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
@@ -383,11 +384,19 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
         ? 'evolution_qr'
         : 'meta_official';
 
+    // Prioriza o campo 'phone' ao invés de 'waba_phone' para canais WhatsApp
+    const whatsappPhone =
+      ch.config?.phone ||
+      ch.phone ||
+      ch.config?.phoneNumber ||
+      ch.config?.phone_number ||
+      ch.config?.waba_phone ||
+      currentAccount?.whatsappPhone ||
+      currentAccount?.phone;
+
     const identifier =
       ch.type === 'whatsapp'
-        ? instanceName
-          ? `Instância: ${instanceName}`
-          : ch.config?.waba_phone || ch.config?.phone || currentAccount?.whatsappPhone || 'Ativo'
+        ? whatsappPhone || (instanceName ? `Instância: ${instanceName}` : 'Ativo')
         : ch.type === 'instagram'
         ? ch.config?.username || `@${ch.name.toLowerCase().replace(/\s+/g, '')}`
         : ch.type === 'telegram'
@@ -416,6 +425,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
       status: ch.is_active ? 'online' : 'offline',
       latency: '28ms',
       ai_enabled: ch.config?.ai_enabled !== false,
+      phone: whatsappPhone,
     };
   };
 
