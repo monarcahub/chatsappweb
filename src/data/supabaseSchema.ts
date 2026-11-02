@@ -1045,5 +1045,104 @@ $$;
 REVOKE EXECUTE ON FUNCTION public.create_new_account(TEXT, TEXT, TEXT, TEXT) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION public.create_new_account(TEXT, TEXT, TEXT, TEXT) FROM anon;
 GRANT EXECUTE ON FUNCTION public.create_new_account(TEXT, TEXT, TEXT, TEXT) TO authenticated;
+
+-- =========================================================================
+-- 15. RPC ATÔMICA: REATIVAR IA EM TODAS AS CONVERSAS DE UM CANAL
+-- =========================================================================
+-- Reativa a IA exclusivamente nas conversas do canal informado que estão em
+-- atendimento humano ('human'), ignorando contatos/conversas com etiqueta 'equipe'.
+-- Valida no banco a autorização do usuário autenticado (auth.uid()) sobre a empresa dona do canal.
+CREATE OR REPLACE FUNCTION public.reactivate_channel_conversations_ai(
+    p_channel_id UUID
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_user_id UUID;
+    v_account_id UUID;
+    v_channel_config JSONB;
+    v_is_authorized BOOLEAN;
+    v_channel_ai_enabled BOOLEAN;
+    v_updated_count INT := 0;
+BEGIN
+    -- 1. Identificar o usuário autenticado via auth.uid()
+    v_user_id := auth.uid();
+    IF v_user_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'Usuário não autenticado.'
+        );
+    END IF;
+
+    -- 2. Localizar o canal e identificar a empresa proprietária
+    SELECT account_id, config INTO v_account_id, v_channel_config
+    FROM public.channels
+    WHERE id = p_channel_id;
+
+    IF v_account_id IS NULL THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'Canal não encontrado.'
+        );
+    END IF;
+
+    -- 3. Verificar em account_users se o usuário possui autorização administrativa sobre a empresa dona do canal
+    SELECT EXISTS (
+        SELECT 1 
+        FROM public.account_users
+        WHERE account_id = v_account_id
+          AND user_id = v_user_id
+          AND role IN ('admin', 'owner', 'supervisor')
+    ) INTO v_is_authorized;
+
+    IF NOT v_is_authorized THEN
+        RETURN jsonb_build_object(
+            'success', false,
+            'error', 'Acesso negado: apenas administradores da empresa têm permissão para reativar a IA em massa.'
+        );
+    END IF;
+
+    -- 4. Verificar se a IA do canal em si está ativada no config
+    v_channel_ai_enabled := COALESCE((v_channel_config->>'ai_enabled')::boolean, true);
+
+    -- 5. Atualizar atômica e exclusivamente as conversas daquele canal que estejam em 'human',
+    -- ignorando qualquer conversa que contenha a etiqueta 'equipe' (case-insensitive).
+    -- Preserva integralmente last_message_at, last_message_text, crm_stage, notes e demais colunas.
+    WITH updated_rows AS (
+        UPDATE public.conversations
+        SET 
+            status = 'ai',
+            updated_at = NOW()
+        WHERE channel_id = p_channel_id
+          AND account_id = v_account_id
+          AND status = 'human'
+          AND NOT (
+              tags IS NOT NULL AND
+              EXISTS (
+                  SELECT 1 
+                  FROM unnest(tags) AS t 
+                  WHERE lower(trim(t)) = 'equipe'
+              )
+          )
+        RETURNING id
+    )
+    SELECT count(*) INTO v_updated_count FROM updated_rows;
+
+    -- 6. Retorna resultado com quantidade real e status do canal
+    RETURN jsonb_build_object(
+        'success', true,
+        'updated_count', v_updated_count,
+        'channel_ai_enabled', v_channel_ai_enabled,
+        'channel_id', p_channel_id
+    );
+END;
+$$;
+
+-- Restringe execução apenas para usuários autenticados
+REVOKE ALL ON FUNCTION public.reactivate_channel_conversations_ai(UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.reactivate_channel_conversations_ai(UUID) TO authenticated;
 `;
 

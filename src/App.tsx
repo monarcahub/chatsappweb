@@ -100,6 +100,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
     startNewConversation,
     isConnectedToSupabase,
     realtimeLatencyMs,
+    reloadSupabaseData,
   } = useSupabaseChat(null, currentAccount?.id || '', user, availableAccounts);
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -578,6 +579,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               isAIActiveGlobal={isAIActiveGlobal}
               onToggleAIGlobal={handleToggleAIGlobal}
               onOpenBrain={() => setIsAIBrainOpen(true)}
+              onReactivateChannelAI={() => reloadSupabaseData()}
             />
           ) : activeRailTab === 'tools' ? (
             <ToolsView

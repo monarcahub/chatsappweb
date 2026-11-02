@@ -28,6 +28,7 @@ import {
   Building2,
   MapPin,
   Phone,
+  Bot,
 } from 'lucide-react';
 import { ChannelType, Account } from '../types';
 import { useAuth } from '../context/AuthContext';
@@ -47,6 +48,7 @@ interface ChannelsSidebarProps {
   isAIActiveGlobal?: boolean;
   onToggleAIGlobal?: (newStatus: boolean) => void;
   onOpenBrain?: () => void;
+  onReactivateChannelAI?: (channelId: string, updatedCount: number) => void;
 }
 
 interface ConnectedChannelItem {
@@ -72,6 +74,7 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
   isAIActiveGlobal = true,
   onToggleAIGlobal,
   onOpenBrain,
+  onReactivateChannelAI,
 }) => {
   const { user, availableAccounts } = useAuth();
   const [channels, setChannels] = useState<ConnectedChannelItem[]>([]);
@@ -149,6 +152,14 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
   const [editNameError, setEditNameError] = useState<string | null>(null);
   const [successToast, setSuccessToast] = useState<string | null>(null);
   const [isTogglingGlobalAI, setIsTogglingGlobalAI] = useState(false);
+
+  // Contadores reais de conversas em atendimento humano por canal WhatsApp (public.conversations onde status = 'human' e sem tag 'equipe')
+  const [humanCountMap, setHumanCountMap] = useState<Record<string, number>>({});
+  const [isLoadingHumanCounts, setIsLoadingHumanCounts] = useState(false);
+
+  // Modal de confirmação obrigatória para Reativar IA em todas as conversas
+  const [reactivateModalChannel, setReactivateTargetChannel] = useState<ConnectedChannelItem | null>(null);
+  const [isReactivatingAI, setIsReactivatingAI] = useState(false);
 
   // Recomendar configuração do Cérebro antes de conectar canais (para nova empresa)
   const [showBrainRecommendationModal, setShowBrainRecommendationModal] = useState(false);
@@ -484,12 +495,204 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
       }
 
       if (channelsData) {
-        setChannels(channelsData.map(mapChannelRow));
+        const mapped = channelsData.map(mapChannelRow);
+        setChannels(mapped);
+        const whatsappIds = mapped.filter((c) => c.type === 'whatsapp').map((c) => c.id);
+        fetchHumanConversationsCounts(whatsappIds);
       }
     } catch (err) {
       console.warn('Erro ao carregar canais:', err);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  // Busca contagens reais de conversas em status 'human' no Supabase excluindo as que possuem a etiqueta 'equipe'
+  const fetchHumanConversationsCounts = useCallback(async (channelIds: string[]) => {
+    if (!channelIds || channelIds.length === 0) {
+      setHumanCountMap({});
+      return;
+    }
+    setIsLoadingHumanCounts(true);
+    try {
+      await ensureSupabaseConfig();
+      if (!isSupabaseConfigured) {
+        setIsLoadingHumanCounts(false);
+        return;
+      }
+
+      // Consulta real à tabela public.conversations do Supabase
+      let query = supabase
+        .from('conversations')
+        .select('id, channel_id, tags')
+        .eq('status', 'human')
+        .in('channel_id', channelIds);
+
+      if (currentAccount?.id && currentAccount.id !== 'all') {
+        query = query.eq('account_id', currentAccount.id);
+      }
+
+      const { data, error } = await query;
+      if (error) {
+        console.warn('Erro ao consultar contagem de conversas humanas:', error.message);
+        return;
+      }
+
+      const counts: Record<string, number> = {};
+      for (const chId of channelIds) {
+        counts[chId] = 0;
+      }
+
+      if (Array.isArray(data)) {
+        for (const conv of data) {
+          // Proteção dos contatos com etiqueta "equipe" (ignora conversas que possuem a etiqueta equipe)
+          const tags = Array.isArray(conv.tags) ? conv.tags : [];
+          const hasEquipeTag = tags.some(
+            (t: any) => String(t || '').toLowerCase().trim() === 'equipe'
+          );
+          if (!hasEquipeTag && conv.channel_id) {
+            counts[conv.channel_id] = (counts[conv.channel_id] || 0) + 1;
+          }
+        }
+      }
+
+      setHumanCountMap(counts);
+    } catch (err) {
+      console.warn('Falha ao buscar contagem de conversas em modo humano:', err);
+    } finally {
+      setIsLoadingHumanCounts(false);
+    }
+  }, [currentAccount?.id]);
+
+  const handleOpenReactivateAIModal = (channel: ConnectedChannelItem) => {
+    setReactivateTargetChannel(channel);
+  };
+
+  const handleCloseReactivateAIModal = () => {
+    if (isReactivatingAI) return;
+    setReactivateTargetChannel(null);
+  };
+
+  const handleConfirmReactivateAI = async () => {
+    if (!reactivateModalChannel) return;
+    setIsReactivatingAI(true);
+    const targetChannel = reactivateModalChannel;
+
+    try {
+      await ensureSupabaseConfig();
+      if (!isSupabaseConfigured) {
+        throw new Error('Supabase não conectado.');
+      }
+
+      let updatedCount = 0;
+      let isChannelAIEnabled = targetChannel.ai_enabled !== false;
+
+      // 1. Tenta executar via RPC atômica segura no Supabase
+      const { data: rpcData, error: rpcError } = await supabase.rpc('reactivate_channel_conversations_ai', {
+        p_channel_id: targetChannel.id,
+      });
+
+      if (!rpcError && (rpcData?.success || typeof rpcData === 'number')) {
+        updatedCount = typeof rpcData === 'number'
+          ? rpcData
+          : (rpcData?.updated_count ?? 0);
+        isChannelAIEnabled = typeof rpcData === 'object' && rpcData !== null && 'channel_ai_enabled' in rpcData
+          ? Boolean(rpcData.channel_ai_enabled)
+          : (targetChannel.ai_enabled !== false);
+      } else {
+        // 2. Fallback seguro caso a RPC ainda não tenha sido criada no SQL Editor do Supabase:
+        // Executa a atualização diretamente com rigorosas validações de segurança e tenant
+
+        // a) Valida o canal e obtém o account_id real do canal
+        const { data: channelRow, error: chErr } = await supabase
+          .from('channels')
+          .select('id, account_id, config')
+          .eq('id', targetChannel.id)
+          .single();
+
+        if (chErr || !channelRow) {
+          throw new Error('Canal não encontrado no Supabase.');
+        }
+
+        const channelAccountId = channelRow.account_id;
+        // Validação estrita de isolamento de tenant
+        if (currentAccount?.id && currentAccount.id !== 'all' && channelAccountId !== currentAccount.id) {
+          throw new Error('Acesso negado: o canal pertence a outra empresa.');
+        }
+
+        if (channelRow.config && typeof channelRow.config === 'object' && 'ai_enabled' in channelRow.config) {
+          isChannelAIEnabled = channelRow.config.ai_enabled !== false;
+        }
+
+        // b) Busca as conversas desse canal cujo status atual seja 'human'
+        const { data: convs, error: fetchErr } = await supabase
+          .from('conversations')
+          .select('id, tags, status')
+          .eq('channel_id', targetChannel.id)
+          .eq('account_id', channelAccountId)
+          .eq('status', 'human');
+
+        if (fetchErr) {
+          throw new Error(`Falha ao buscar conversas: ${fetchErr.message}`);
+        }
+
+        // c) Exclui conversas com a etiqueta 'equipe' (case-insensitive)
+        const eligibleConvs = (convs || []).filter((c) => {
+          const tags = Array.isArray(c.tags) ? c.tags : [];
+          const hasEquipe = tags.some(
+            (t: any) => String(t || '').toLowerCase().trim() === 'equipe'
+          );
+          return !hasEquipe;
+        });
+
+        if (eligibleConvs.length > 0) {
+          const eligibleIds = eligibleConvs.map((c) => c.id);
+          const { error: updErr } = await supabase
+            .from('conversations')
+            .update({
+              status: 'ai',
+              updated_at: new Date().toISOString(),
+            })
+            .in('id', eligibleIds);
+
+          if (updErr) {
+            throw new Error(`Falha ao atualizar conversas no banco: ${updErr.message}`);
+          }
+          updatedCount = eligibleIds.length;
+        } else {
+          updatedCount = 0;
+        }
+      }
+
+      // Atualiza o contador na interface imediatamente
+      setHumanCountMap((prev) => ({
+        ...prev,
+        [targetChannel.id]: 0,
+      }));
+
+      // Notifica o callback do app para recarregar conversas se disponível
+      onReactivateChannelAI?.(targetChannel.id, updatedCount);
+
+      // Mensagem conforme Requisito 7 e Requisito 9
+      if (!isChannelAIEnabled) {
+        setSuccessToast(
+          `IA reativada em ${updatedCount} ${updatedCount === 1 ? 'conversa' : 'conversas'} com sucesso. Atenção: a IA deste canal está desativada no momento; ative o switch do canal para que ela comece a responder.`
+        );
+      } else {
+        setSuccessToast(`IA reativada em ${updatedCount} ${updatedCount === 1 ? 'conversa' : 'conversas'} com sucesso.`);
+      }
+
+      handleCloseReactivateAIModal();
+
+      // Recarrega contadores reais
+      const whatsappIds = channels.filter((c) => c.type === 'whatsapp').map((c) => c.id);
+      fetchHumanConversationsCounts(whatsappIds);
+    } catch (err: any) {
+      console.error('Erro ao reativar IA em massa:', err);
+      const safeMsg = err?.message || 'Falha ao processar reativação de IA nas conversas.';
+      setSuccessToast(`❌ Erro: ${safeMsg}`);
+    } finally {
+      setIsReactivatingAI(false);
     }
   };
 
@@ -1176,6 +1379,45 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                             <span>Escanear QR</span>
                           </button>
                         )}
+                      </div>
+                    )}
+
+                    {/* Opção exclusiva para WhatsApp: Reativar IA em massa nas conversas em modo humano */}
+                    {channel.type === 'whatsapp' && (
+                      <div className="mt-2.5 pt-2 border-t border-gray-700/20 flex flex-col gap-1">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <button
+                            type="button"
+                            id={`btn-reactivate-ai-${channel.id}`}
+                            onClick={() => handleOpenReactivateAIModal(channel)}
+                            className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-[#064e3b]/80 hover:bg-[#064e3b] text-[#34d399] border border-[#34d399]/40 transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
+                            title="Reativar IA nas conversas que estão em atendimento humano neste WhatsApp"
+                          >
+                            <Bot className="w-3.5 h-3.5" />
+                            <span>Reativar IA nas conversas</span>
+                          </button>
+
+                          <span className="text-[10px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full">
+                            {isLoadingHumanCounts ? (
+                              <span className="inline-flex items-center gap-1">
+                                <RefreshCw className="w-2.5 h-2.5 animate-spin" /> ...
+                              </span>
+                            ) : (
+                              `${humanCountMap[channel.id] ?? 0} em humano`
+                            )}
+                          </span>
+                        </div>
+
+                        {/* Exibir abaixo a quantidade real de conversas atualmente em modo humano naquele canal */}
+                        <p className="text-[10px] text-[#8696a0] mt-0.5">
+                          {isLoadingHumanCounts
+                            ? 'Consultando conversas no Supabase...'
+                            : `${humanCountMap[channel.id] ?? 0} ${
+                                (humanCountMap[channel.id] ?? 0) === 1
+                                  ? 'conversa em atendimento humano'
+                                  : 'conversas em atendimento humano'
+                              }`}
+                        </p>
                       </div>
                     )}
 
@@ -2488,6 +2730,82 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                 className="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white cursor-pointer shadow-md transition-colors"
               >
                 {confirmModal.confirmText || 'Confirmar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Confirmação Obrigatória: Reativar IA em todas as conversas */}
+      {reactivateModalChannel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150">
+          <div
+            className={`w-full max-w-md rounded-2xl p-6 border shadow-2xl space-y-4 animate-in zoom-in-95 duration-150 ${
+              darkMode ? 'bg-[#202c33] border-[#313d45] text-[#e9edef]' : 'bg-white border-[#e9edef] text-[#111b21]'
+            }`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-xl bg-[#00a884]/20 text-[#00a884] flex items-center justify-center shrink-0">
+                  <Bot className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-base">Reativar IA em todas as conversas?</h4>
+                  <p className="text-[11px] text-[#00a884] font-medium">
+                    Canal: <strong>{reactivateModalChannel.name}</strong> • {humanCountMap[reactivateModalChannel.id] ?? 0} em atendimento humano
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseReactivateAIModal}
+                disabled={isReactivatingAI}
+                className="p-1 rounded-lg text-[#8696a0] hover:text-white hover:bg-white/10 transition-colors cursor-pointer"
+                title="Fechar"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="text-xs text-[#8696a0] leading-relaxed space-y-3 pt-1">
+              <p>
+                Ao reativar todas as conversas com IA, sua equipe que manda mensagens para esse número também poderá receber respostas da IA.
+              </p>
+              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-amber-300 font-medium text-[11px] leading-relaxed">
+                Certifique-se de usar a etiqueta &apos;equipe&apos; nos contatos com os quais a IA não deve trocar mensagens.
+              </div>
+              <p className="font-semibold text-gray-200">
+                Tem certeza que deseja reativar a IA em todas as conversas agora?
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-gray-700/20">
+              <button
+                type="button"
+                onClick={handleCloseReactivateAIModal}
+                disabled={isReactivatingAI}
+                className="px-4 py-2 rounded-xl text-xs font-semibold border border-gray-600/40 hover:bg-gray-500/10 cursor-pointer transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                id="btn-confirm-bulk-reactivate-ai"
+                onClick={handleConfirmReactivateAI}
+                disabled={isReactivatingAI}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-[#00a884] hover:bg-[#009374] text-white flex items-center gap-1.5 cursor-pointer shadow-md transition-colors disabled:opacity-50"
+              >
+                {isReactivatingAI ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Reativando IA...</span>
+                  </>
+                ) : (
+                  <>
+                    <Bot className="w-3.5 h-3.5" />
+                    <span>Sim, reativar IA</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
