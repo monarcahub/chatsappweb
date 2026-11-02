@@ -655,7 +655,7 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
     }
   };
 
-  // Pausar ou Ativar a IA em TODOS os canais da empresa
+  // Pausar ou Ativar a IA em TODOS os canais da empresa (Master Switch)
   const handleToggleAllChannels = async (newStatus: boolean) => {
     if (!account?.id) {
       showToast('Nenhuma empresa selecionada');
@@ -664,32 +664,21 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
 
     setIsTogglingStatus(true);
     try {
-      // 1. Atualizar cerebro_ia diretamente
-      await supabase
-        .from('cerebro_ia')
-        .upsert({
-          account_id: account.id,
-          is_active: newStatus,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'account_id' });
+      // Executa exclusivamente via RPC atômica toggle_company_ai_global
+      const { data: rpcData, error: rpcError } = await supabase.rpc('toggle_company_ai_global', {
+        p_account_id: account.id,
+        p_ai_enabled: newStatus,
+      });
 
-      // 2. Atualizar todos os canais da empresa
-      for (const ch of channels) {
-        const { data: existingCh } = await supabase
-          .from('channels')
-          .select('config')
-          .eq('id', ch.id)
-          .single();
-        const currentCfg = existingCh?.config || {};
-        await supabase
-          .from('channels')
-          .update({
-            config: { ...currentCfg, ai_enabled: newStatus },
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', ch.id);
+      if (rpcError) {
+        throw new Error(rpcError.message || 'Falha ao atualizar status global da IA.');
       }
 
+      if (rpcData && typeof rpcData === 'object' && 'success' in rpcData && !rpcData.success) {
+        throw new Error(rpcData.error || 'Falha ao atualizar status global da IA.');
+      }
+
+      // Atualiza estado local e notifica callbacks somente após confirmação da RPC
       setBrainConfig((prev) => ({ ...prev, is_active: newStatus }));
       setChannels((prev) => prev.map((ch) => ({ ...ch, ai_enabled: newStatus })));
       if (onToggleAIGlobal) {
@@ -701,7 +690,14 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
           : `⏸️ Automação pausada em todos os canais de ${account.name} (Atendimento 100% Humano)!`
       );
     } catch (err: any) {
-      showToast(`Falha de conexão: ${err?.message || 'Tente novamente'}`);
+      console.error('Erro ao alternar IA global da empresa:', err);
+      // Sanitização estrita: jamais expor tokens, chaves ou payload JSON no toast
+      const rawMsg = String(err?.message || 'Falha ao alterar status global');
+      const safeMsg = (rawMsg.includes('token') || rawMsg.includes('config') || rawMsg.includes('{'))
+        ? 'Erro de permissão ou conexão ao atualizar automação da empresa.'
+        : rawMsg;
+      showToast(`❌ Erro: ${safeMsg}`);
+      // O estado da interface NÃO é alterado em caso de erro, mantendo o estado anterior
     } finally {
       setIsTogglingStatus(false);
     }
@@ -713,21 +709,21 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
     const newStatus = !currentAiEnabled;
     setTogglingChannelId(channelId);
     try {
-      const { data: chData } = await supabase
-        .from('channels')
-        .select('config')
-        .eq('id', channelId)
-        .single();
+      // Executa exclusivamente via RPC atômica segura toggle_channel_ai
+      const { data: rpcData, error: rpcError } = await supabase.rpc('toggle_channel_ai', {
+        p_channel_id: channelId,
+        p_ai_enabled: newStatus,
+      });
 
-      const updatedCfg = { ...(chData?.config || {}), ai_enabled: newStatus };
-      await supabase
-        .from('channels')
-        .update({
-          config: updatedCfg,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', channelId);
+      if (rpcError) {
+        throw new Error(rpcError.message || 'Falha ao atualizar status da IA no canal.');
+      }
 
+      if (rpcData && typeof rpcData === 'object' && 'success' in rpcData && !rpcData.success) {
+        throw new Error(rpcData.error || 'Falha ao atualizar status da IA no canal.');
+      }
+
+      // Atualiza lista local de canais somente após confirmação da RPC
       setChannels((prev) =>
         prev.map((ch) => (ch.id === channelId ? { ...ch, ai_enabled: newStatus } : ch))
       );
@@ -750,7 +746,14 @@ export const AIBrainModal: React.FC<AIBrainModalProps> = ({
           : `⏸️ IA Pausada no canal "${target?.name || 'Canal'}" (Humano neste número)!`
       );
     } catch (err: any) {
-      showToast(`Erro ao alterar canal: ${err?.message || 'Tente novamente'}`);
+      console.error('Erro ao alternar IA do canal:', err);
+      // Sanitização estrita: jamais expor tokens, chaves ou payload JSON no toast
+      const rawMsg = String(err?.message || 'Falha ao alterar canal');
+      const safeMsg = (rawMsg.includes('token') || rawMsg.includes('config') || rawMsg.includes('{'))
+        ? 'Erro de permissão ou conexão ao atualizar o canal.'
+        : rawMsg;
+      showToast(`❌ Erro: ${safeMsg}`);
+      // O estado da interface NÃO é alterado em caso de erro, mantendo o estado anterior
     } finally {
       setTogglingChannelId(null);
     }

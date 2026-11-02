@@ -497,86 +497,79 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
     const newStatus = !currentStatus;
     try {
       await ensureSupabaseConfig();
-      let updated = false;
 
-      if (isSupabaseConfigured) {
-        const currentChannel = channels.find((c) => c.id === channelId);
-        const { error } = await supabase
-          .from('channels')
-          .update({
-            config: {
-              ...(currentChannel ? { ai_enabled: newStatus } : {}),
-              ai_enabled: newStatus,
-            },
-          })
-          .eq('id', channelId);
-        if (!error) updated = true;
+      if (!isSupabaseConfigured) {
+        throw new Error('Supabase não conectado.');
       }
 
-      if (!updated) {
-        await fetch('/api/channels/toggle-ai', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            channel_id: channelId,
-            ai_enabled: newStatus,
-            account_id: currentAccount?.id,
-          }),
-        });
+      // Executa exclusivamente via RPC atômica segura no Supabase (jsonb_set com validação RBAC)
+      const { data: rpcData, error: rpcError } = await supabase.rpc('toggle_channel_ai', {
+        p_channel_id: channelId,
+        p_ai_enabled: newStatus,
+      });
+
+      if (rpcError) {
+        throw new Error(rpcError.message || 'Falha ao atualizar status da IA no canal.');
       }
 
+      if (rpcData && typeof rpcData === 'object' && 'success' in rpcData && !rpcData.success) {
+        throw new Error(rpcData.error || 'Falha ao atualizar status da IA no canal.');
+      }
+
+      // Atualiza o estado da lista local somente APÓS confirmação de sucesso da RPC
       setChannels((prev) =>
         prev.map((c) => (c.id === channelId ? { ...c, ai_enabled: newStatus } : c))
       );
-    } catch (err) {
-      console.warn('Erro ao alternar IA do canal:', err);
+
+      const target = channels.find((c) => c.id === channelId);
+      setSuccessToast(
+        newStatus
+          ? `🚀 IA Ativada no canal "${target?.name || 'Canal'}"!`
+          : `⏸️ IA Pausada no canal "${target?.name || 'Canal'}" (Atendimento Humano)!`
+      );
+    } catch (err: any) {
+      console.error('Erro ao alternar IA do canal:', err);
+      // Sanitização estrita: jamais expor tokens, chaves ou payload JSON no toast
+      const rawMsg = String(err?.message || 'Falha ao atualizar status da IA');
+      const safeMsg = (rawMsg.includes('token') || rawMsg.includes('config') || rawMsg.includes('{'))
+        ? 'Erro de permissão ou conexão ao atualizar o canal.'
+        : rawMsg;
+      setSuccessToast(`❌ Erro: ${safeMsg}`);
+      // O estado da interface NÃO é alterado em caso de erro, mantendo o estado anterior
     }
   };
 
-  // Ativar ou pausar a IA globalmente para TODOS os canais da empresa selecionada
+  // Ativar ou pausar a IA globalmente para TODOS os canais da empresa selecionada (Master Switch)
   const handleToggleCompanyAIGlobal = async (newStatus: boolean) => {
     if (!currentAccount?.id) return;
     setIsTogglingGlobalAI(true);
     try {
       await ensureSupabaseConfig();
 
-      if (isSupabaseConfigured) {
-        // 1. Atualizar cerebro_ia
-        await supabase
-          .from('cerebro_ia')
-          .upsert(
-            {
-              account_id: currentAccount.id,
-              is_active: newStatus,
-              updated_at: new Date().toISOString(),
-            },
-            { onConflict: 'account_id' }
-          );
-
-        // 2. Atualizar todos os canais da empresa
-        for (const ch of channels) {
-          const { data: existingCh } = await supabase
-            .from('channels')
-            .select('config')
-            .eq('id', ch.id)
-            .single();
-          const currentCfg = existingCh?.config || {};
-          await supabase
-            .from('channels')
-            .update({
-              config: { ...currentCfg, ai_enabled: newStatus },
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', ch.id);
-        }
+      if (!isSupabaseConfigured) {
+        throw new Error('Supabase não conectado.');
       }
 
-      // Notificar callback global do App
+      // Executa exclusivamente via RPC atômica global toggle_company_ai_global
+      const { data: rpcData, error: rpcError } = await supabase.rpc('toggle_company_ai_global', {
+        p_account_id: currentAccount.id,
+        p_ai_enabled: newStatus,
+      });
+
+      if (rpcError) {
+        throw new Error(rpcError.message || 'Falha ao atualizar status global da IA.');
+      }
+
+      if (rpcData && typeof rpcData === 'object' && 'success' in rpcData && !rpcData.success) {
+        throw new Error(rpcData.error || 'Falha ao atualizar status global da IA.');
+      }
+
+      // Notificar callback global do App somente após sucesso
       if (onToggleAIGlobal) {
         onToggleAIGlobal(newStatus);
       }
 
-      // Atualizar lista local de canais
+      // Atualizar lista local de canais somente após sucesso confirmado da RPC
       setChannels((prev) => prev.map((ch) => ({ ...ch, ai_enabled: newStatus })));
 
       setSuccessToast(
@@ -585,7 +578,14 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
           : `⏸️ Automação pausada em todos os canais de ${currentAccount.name} (Atendimento 100% Humano)!`
       );
     } catch (err: any) {
-      console.warn('Erro ao alternar IA global da empresa:', err);
+      console.error('Erro ao alternar IA global da empresa:', err);
+      // Sanitização estrita: jamais expor tokens ou payload JSON no toast
+      const rawMsg = String(err?.message || 'Falha ao atualizar status global da IA');
+      const safeMsg = (rawMsg.includes('token') || rawMsg.includes('config') || rawMsg.includes('{'))
+        ? 'Erro de permissão ou conexão ao atualizar automação da empresa.'
+        : rawMsg;
+      setSuccessToast(`❌ Erro: ${safeMsg}`);
+      // O estado da interface NÃO é alterado em caso de erro, mantendo o estado anterior
     } finally {
       setIsTogglingGlobalAI(false);
     }

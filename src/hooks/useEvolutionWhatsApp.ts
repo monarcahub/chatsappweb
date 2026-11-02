@@ -196,12 +196,19 @@ export function useEvolutionWhatsApp(options?: UseEvolutionWhatsAppOptions) {
           }
 
           if (targetChannelId) {
+            const matchedChannel = existing?.find((c: any) => c.id === targetChannelId);
+            const existingConfig = matchedChannel?.config || {};
+            const mergedConfig = {
+              ...existingConfig,
+              ...channelConfig,
+            };
+
             const { error: updErr } = await supabase
               .from('channels')
               .update({
                 name: chName,
                 is_active: true,
-                config: channelConfig,
+                config: mergedConfig,
               })
               .eq('id', targetChannelId);
             if (!updErr) saved = true;

@@ -184,6 +184,8 @@ export interface ShowNotificationOptions {
   icon?: string;
   conversationId?: string;
   channel?: string;
+  isSystemEvent?: boolean;
+  senderType?: string;
   onClick?: () => void;
 }
 
@@ -192,7 +194,19 @@ export interface ShowNotificationOptions {
  * e dispara o evento in-app para exibição de balão visual flutuante e som.
  */
 export function showDesktopNotification(options: ShowNotificationOptions): void {
-  const { title, body, icon, conversationId, channel, onClick } = options;
+  const { title, body, icon, conversationId, channel, isSystemEvent, senderType, onClick } = options;
+
+  // Eventos de sistema (ex: "Pra IA", "Assumir atendimento") nunca tocam som nem disparam notificações
+  if (
+    isSystemEvent ||
+    senderType === 'system' ||
+    (typeof body === 'string' &&
+      (body.includes('reativou o atendimento') ||
+       body.includes('assumiu o atendimento') ||
+       body.includes('finalizou o atendimento')))
+  ) {
+    return;
+  }
 
   // 1. Reproduz o áudio de mensagem
   playIncomingNotificationSound();

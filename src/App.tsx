@@ -287,6 +287,19 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
       const detail = customEvent.detail;
       if (!detail) return;
 
+      // Eventos de sistema (ex: "Pra IA", "Assumir atendimento", finalizações) nunca abrem o box de notificação
+      const isSystemEvent =
+        detail.isSystemEvent === true ||
+        detail.sender_type === 'system' ||
+        (typeof detail.body === 'string' &&
+          (detail.body.includes('reativou o atendimento') ||
+           detail.body.includes('assumiu o atendimento') ||
+           detail.body.includes('finalizou o atendimento')));
+
+      if (isSystemEvent) {
+        return;
+      }
+
       if (notificationTimeoutRef.current) {
         clearTimeout(notificationTimeoutRef.current);
       }

@@ -366,6 +366,10 @@ export function useSupabaseChat(
 
         if (latestMsgs) {
           for (const m of latestMsgs) {
+            // Ignora mensagens de sistema ao pré-carregar o resumo da última mensagem da conversa na lista
+            if (m.sender_type === 'system' || m.metadata?.isSystemEvent === true) {
+              continue;
+            }
             if (!latestMsgsMap.has(m.conversation_id)) {
               latestMsgsMap.set(m.conversation_id, m);
             }
@@ -445,7 +449,13 @@ export function useSupabaseChat(
               senderType = 'coexistence_mobile';
             }
 
-            const rawText = row.last_message_text || latestMsg?.content || '';
+            const isSystemRowText =
+              typeof row.last_message_text === 'string' &&
+              (row.last_message_text.includes('reativou o atendimento') ||
+               row.last_message_text.includes('assumiu o atendimento') ||
+               row.last_message_text.includes('finalizou o atendimento'));
+
+            const rawText = (!isSystemRowText && row.last_message_text) ? row.last_message_text : (latestMsg?.content || '');
             const textLower = String(rawText || '').toLowerCase().trim();
             const isAudioMsg =
               latestMsg?.content_type === 'audio' ||
@@ -660,45 +670,53 @@ export function useSupabaseChat(
             };
           });
 
-          // Atualiza a conversa na lista lateral
-          setConversations((prev) =>
-            prev.map((c) => {
-              if (c.id === convId) {
-                const isCurrentActive = selectedIdRef.current === convId;
-                const isAudio =
-                  newMsg.content_type === 'audio' ||
-                  /(\.ogg|\.opus|\.mp3|\.wav|\.m4a|\.aac)(\?.*)?$/i.test(newMsg.media_url || '') ||
-                  newMsg.media_url?.includes('/audio/') ||
-                  (newMsg.content && /^(audio|áudio)/i.test(String(newMsg.content).trim()));
+          const isSystemEvent =
+            newMsg.sender_type === 'system' ||
+            newMsg.metadata?.isSystemEvent === true ||
+            formattedMessage.senderType === 'system';
 
-                const mediaDuration = formatAudioDuration(
-                  newMsg.metadata?.duration ||
-                  newMsg.metadata?.seconds ||
-                  newMsg.metadata?.audio_duration ||
-                  newMsg.media_duration ||
-                  newMsg.content
-                );
+          // Atualiza a conversa na lista lateral SOMENTE se NÃO for mensagem/evento de sistema
+          // (Eventos como 'Pra IA' ou 'Assumir' não devem alterar o preview da última mensagem nem mover a conversa para o topo)
+          if (!isSystemEvent) {
+            setConversations((prev) =>
+              prev.map((c) => {
+                if (c.id === convId) {
+                  const isCurrentActive = selectedIdRef.current === convId;
+                  const isAudio =
+                    newMsg.content_type === 'audio' ||
+                    /(\.ogg|\.opus|\.mp3|\.wav|\.m4a|\.aac)(\?.*)?$/i.test(newMsg.media_url || '') ||
+                    newMsg.media_url?.includes('/audio/') ||
+                    (newMsg.content && /^(audio|áudio)/i.test(String(newMsg.content).trim()));
 
-                return {
-                  ...c,
-                  unreadCount: isCurrentActive ? 0 : c.unreadCount + 1,
-                  lastMessage: {
-                    text: newMsg.content || (isAudio ? 'audio' : 'Nova mensagem'),
-                    timestamp: formatSaoPauloTime(newMsg.created_at),
-                    senderType: formattedMessage.senderType,
-                    status: isCurrentActive ? 'read' : 'delivered',
-                    contentType: isAudio ? 'audio' : (newMsg.content_type || 'text'),
-                    mediaDuration,
-                  },
-                  updatedAt: newMsg.created_at || new Date().toISOString(),
-                };
-              }
-              return c;
-            })
-          );
+                  const mediaDuration = formatAudioDuration(
+                    newMsg.metadata?.duration ||
+                    newMsg.metadata?.seconds ||
+                    newMsg.metadata?.audio_duration ||
+                    newMsg.media_duration ||
+                    newMsg.content
+                  );
 
-          // Dispara som e notificação da área de trabalho se for mensagem recebida (não do próprio atendente)
-          if (newMsg.sender_type !== 'agent') {
+                  return {
+                    ...c,
+                    unreadCount: isCurrentActive ? 0 : c.unreadCount + 1,
+                    lastMessage: {
+                      text: newMsg.content || (isAudio ? 'audio' : 'Nova mensagem'),
+                      timestamp: formatSaoPauloTime(newMsg.created_at),
+                      senderType: formattedMessage.senderType,
+                      status: isCurrentActive ? 'read' : 'delivered',
+                      contentType: isAudio ? 'audio' : (newMsg.content_type || 'text'),
+                      mediaDuration,
+                    },
+                    updatedAt: newMsg.created_at || new Date().toISOString(),
+                  };
+                }
+                return c;
+              })
+            );
+          }
+
+          // Dispara som e notificação da área de trabalho se for mensagem recebida (NUNCA para atendente nem para eventos do sistema)
+          if (newMsg.sender_type !== 'agent' && !isSystemEvent) {
             const currentConv = conversationsRef.current.find((c) => c.id === convId);
             const senderTitle = currentConv?.contact.name || newMsg.sender_name || 'Novo Atendimento';
             showDesktopNotification({
@@ -764,6 +782,12 @@ export function useSupabaseChat(
                   newText || c.lastMessage.mediaDuration
                 );
 
+                const isSystemText =
+                  typeof newText === 'string' &&
+                  (newText.includes('reativou o atendimento') ||
+                   newText.includes('assumiu o atendimento') ||
+                   newText.includes('finalizou o atendimento'));
+
                 return {
                   ...c,
                   status: (updated.status as ConversationStatus) || c.status,
@@ -772,8 +796,10 @@ export function useSupabaseChat(
                   tags: updated.tags || c.tags,
                   lastMessage: {
                     ...c.lastMessage,
-                    text: newText || (isAudio ? 'audio' : c.lastMessage.text),
-                    timestamp: updated.last_message_at ? formatSaoPauloTime(updated.last_message_at) : c.lastMessage.timestamp,
+                    text: isSystemText ? c.lastMessage.text : (newText || (isAudio ? 'audio' : c.lastMessage.text)),
+                    timestamp: isSystemText
+                      ? c.lastMessage.timestamp
+                      : (updated.last_message_at ? formatSaoPauloTime(updated.last_message_at) : c.lastMessage.timestamp),
                     contentType: isAudio ? 'audio' : c.lastMessage.contentType,
                     mediaDuration,
                     senderType:
@@ -781,7 +807,7 @@ export function useSupabaseChat(
                         ? 'coexistence_mobile'
                         : c.lastMessage.senderType,
                   },
-                  updatedAt: updated.last_message_at || c.updatedAt,
+                  updatedAt: isSystemText ? c.updatedAt : (updated.last_message_at || c.updatedAt),
                   contact: {
                     ...c.contact,
                     aiStatus: updated.status === 'ai' ? 'active' : 'inactive',
@@ -1193,6 +1219,10 @@ export function useSupabaseChat(
         },
       };
 
+      // Preserva explicitamente o lastMessage e updatedAt originais para não alterar a ordem da conversa
+      const previousLastMessage = conv?.lastMessage;
+      const previousLastMessageAt = (conv as any)?.lastMessageAt || conv?.updatedAt || null;
+
       setConversations((prev) =>
         prev.map((c) => {
           if (c.id === conversationId) {
@@ -1203,6 +1233,8 @@ export function useSupabaseChat(
                 ...c.contact,
                 aiStatus: newStatus === 'ai' ? 'active' : 'inactive',
               },
+              lastMessage: previousLastMessage || c.lastMessage,
+              updatedAt: previousLastMessageAt || c.updatedAt,
             };
           }
           return c;
@@ -1217,16 +1249,25 @@ export function useSupabaseChat(
 
       if (isSupabaseConfigured) {
         try {
-          // 1. Atualiza status na tabela conversations
+          // Recupera os valores atuais de last_message_at e last_message_text do banco antes de inserir mensagem de sistema
+          const { data: currentDbConv } = await supabase
+            .from('conversations')
+            .select('last_message_at, last_message_text')
+            .eq('id', conversationId)
+            .maybeSingle();
+
+          const preservedLastAt = currentDbConv?.last_message_at || previousLastMessageAt || null;
+          const preservedLastText = currentDbConv?.last_message_text || previousLastMessage?.text || null;
+
+          // 1. Atualiza status na tabela conversations mantendo last_message_at intacto
           await supabase
             .from('conversations')
             .update({
               status: newStatus,
-              updated_at: nowIso,
             })
             .eq('id', conversationId);
 
-          // 2. Persiste mensagem do evento do sistema na tabela messages
+          // 2. Persiste mensagem do evento do sistema na tabela messages (para exibir no histórico do chat)
           await supabase.from('messages').insert({
             id: messageUuid,
             account_id: currentAccountId || (conv as any)?.account_id || null,
@@ -1246,6 +1287,18 @@ export function useSupabaseChat(
               newStatus: newStatus,
             },
           });
+
+          // 3. Garante que last_message_at e last_message_text não sejam alterados no banco pelo trigger trg_after_message_insert,
+          // evitando que a conversa suba ao topo da lista por causa da troca de status
+          if (preservedLastAt) {
+            await supabase
+              .from('conversations')
+              .update({
+                last_message_at: preservedLastAt,
+                last_message_text: preservedLastText,
+              })
+              .eq('id', conversationId);
+          }
         } catch (err) {
           console.error('Erro ao atualizar status da conversa e registrar evento no Supabase:', err);
         }

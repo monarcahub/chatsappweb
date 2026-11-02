@@ -154,6 +154,11 @@ CREATE INDEX IF NOT EXISTS idx_messages_conv_created ON public.messages(conversa
 CREATE OR REPLACE FUNCTION public.handle_new_message()
 RETURNS TRIGGER AS $$
 BEGIN
+    -- Ignora eventos de sistema (takeover, resume_ai, encerramento) para não alterar o preview nem mover a conversa para o topo
+    IF NEW.sender_type = 'system' OR (NEW.metadata->>'isSystemEvent')::boolean IS TRUE THEN
+        RETURN NEW;
+    END IF;
+
     UPDATE public.conversations
     SET 
         last_message_text = NEW.content,
