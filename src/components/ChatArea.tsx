@@ -50,7 +50,13 @@ import {
 } from 'lucide-react';
 import { Conversation, Message, ConversationStatus, Tag, MessageContentType } from '../types';
 import { WhatsAppWallpaper } from './WhatsAppWallpaper';
-import { formatSaoPauloTime, formatSaoPauloDate } from '../utils/dateFormat';
+import {
+  formatSaoPauloTime,
+  formatSaoPauloDate,
+  getChatDateSeparatorLabel,
+  formatMessageDetailsDateAndHour,
+  parseSafeDate,
+} from '../utils/dateFormat';
 import { ChatMenuDropdown } from './ChatMenuDropdown';
 import { AudioPlayer } from './AudioPlayer';
 import { WhatsAppFormattedText, applyWhatsAppFormatting } from '../utils/whatsappFormatter';
@@ -220,6 +226,28 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
   // Message selection state
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
+
+  // Atualização dinâmica de horário (permite virada de meia-noite sem recarregar a tela)
+  const [nowTick, setNowTick] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNowTick(Date.now());
+    }, 30000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const fallbackConvDate = conversation?.lastMessageAt || conversation?.updatedAt;
+
+  // Ordenação cronológica estrita das mensagens preservando estabilidade
+  const chronologicalMessages = React.useMemo(() => {
+    if (!messages || messages.length === 0) return [];
+    return [...messages].sort((a, b) => {
+      const timeA = parseSafeDate(a.createdAt || a.timestamp, fallbackConvDate).getTime();
+      const timeB = parseSafeDate(b.createdAt || b.timestamp, fallbackConvDate).getTime();
+      return timeA - timeB;
+    });
+  }, [messages, fallbackConvDate]);
 
   // Disappearing messages state
   const [isDisappearingModalOpen, setIsDisappearingModalOpen] = useState(false);
@@ -1296,7 +1324,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         </div>
 
         {/* Histórico das Mensagens */}
-        {messages.map((msg) => {
+        {chronologicalMessages.map((msg, index) => {
           // REGRA DE ALINHAMENTO DO CHATSAPP:
           // Toda mensagem com sender_type diferente de 'customer' ('agent', 'bot', 'coexistence_mobile', etc.)
           // DEVE ficar no LADO DIREITO (outgoing / verde WhatsApp).
@@ -1307,6 +1335,24 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             rawSender === 'system' ||
             msg.metadata?.isSystemEvent === true;
 
+          // Identifica o dia da mensagem atual e da anterior para inserção do separador estilo WhatsApp
+          const sepInfo = getChatDateSeparatorLabel(
+            msg.createdAt || msg.timestamp,
+            new Date(nowTick),
+            fallbackConvDate
+          );
+
+          const prevMsg = index > 0 ? chronologicalMessages[index - 1] : null;
+          const prevDayKey = prevMsg
+            ? getChatDateSeparatorLabel(
+                prevMsg.createdAt || prevMsg.timestamp,
+                new Date(nowTick),
+                fallbackConvDate
+              ).dayKey
+            : null;
+
+          const showDateSeparator = index === 0 || sepInfo.dayKey !== prevDayKey;
+
           // Evento do Sistema na Timeline (ex: "Arthur assumiu o atendimento Oct 22, 2:05 PM")
           // Estilo fiel à imagem de referência com badge centralizado e arredondado
           if (isSystemMessage) {
@@ -1315,10 +1361,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             try {
               const d = rawDate ? new Date(rawDate) : new Date();
               if (!isNaN(d.getTime())) {
-                displayTime =
-                  d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Sao_Paulo' }) +
-                  ', ' +
-                  d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Sao_Paulo' });
+                displayTime = formatSaoPauloTime(d);
               } else {
                 displayTime = formatSaoPauloTime(rawDate);
               }
@@ -1333,28 +1376,52 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 ? msg.content.slice(actor.length).trim()
                 : msg.content);
 
+            const isAiEvent =
+              msg.content.toLowerCase().includes('ia') ||
+              String(msg.metadata?.action || '').toLowerCase().includes('ia') ||
+              msg.metadata?.isAiEvent === true;
+
             return (
-              <div key={msg.id} className="flex justify-center my-3 px-4 select-none animate-in fade-in duration-200">
-                <div
-                  className={`inline-flex items-center flex-wrap justify-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs shadow-xs text-center max-w-lg leading-normal transition-colors ${
-                    darkMode
-                      ? 'bg-[#202c33] border border-[#2a3942] text-[#d1d7db]'
-                      : 'bg-[#e9edef] border border-[#d1d7db]/70 text-[#54656f]'
-                  }`}
-                >
-                  {actor && (
-                    <span className={`font-semibold ${darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'}`}>
-                      {actor}
-                    </span>
-                  )}
-                  <span>{action}</span>
-                  {displayTime && (
-                    <span className={`text-[11px] ml-1.5 shrink-0 font-normal ${darkMode ? 'text-[#8696a0]' : 'text-[#8696a0]'}`}>
-                      {displayTime}
-                    </span>
-                  )}
+              <React.Fragment key={msg.id}>
+                {showDateSeparator && (
+                  <div
+                    key={`date-sep-${sepInfo.dayKey}-${msg.id}`}
+                    className="flex justify-center my-3 select-none animate-in fade-in duration-200"
+                  >
+                    <div
+                      className={`inline-flex items-center justify-center px-3 py-1 rounded-lg text-xs font-medium shadow-xs transition-colors ${
+                        darkMode
+                          ? 'bg-[#182229] border border-[#2a3942]/70 text-[#8696a0]'
+                          : 'bg-[#ffffff] border border-[#d1d7db]/80 text-[#54656f]'
+                      }`}
+                    >
+                      {sepInfo.label}
+                    </div>
+                  </div>
+                )}
+                <div className="flex justify-center my-3 px-4 select-none animate-in fade-in duration-200">
+                  <div
+                    className={`inline-flex items-center flex-wrap justify-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs shadow-xs text-center max-w-lg leading-normal transition-colors ${
+                      darkMode
+                        ? 'bg-[#202c33] border border-[#2a3942] text-[#d1d7db]'
+                        : 'bg-[#e9edef] border border-[#d1d7db]/70 text-[#54656f]'
+                    }`}
+                  >
+                    {isAiEvent && <Bot className="w-3.5 h-3.5 text-[#00a884] shrink-0" />}
+                    {actor && (
+                      <span className={`font-semibold ${darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'}`}>
+                        {actor}
+                      </span>
+                    )}
+                    <span>{action}</span>
+                    {displayTime && (
+                      <span className={`text-[11px] ml-1.5 shrink-0 font-normal ${darkMode ? 'text-[#8696a0]' : 'text-[#8696a0]'}`}>
+                        {displayTime}
+                      </span>
+                    )}
+                  </div>
                 </div>
-              </div>
+              </React.Fragment>
             );
           }
 
@@ -1397,9 +1464,25 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             msg.content.toLowerCase().includes(searchQuery.toLowerCase());
 
           return (
-            <div
-              key={msg.id}
-              onTouchStart={(e) => {
+            <React.Fragment key={msg.id}>
+              {showDateSeparator && (
+                <div
+                  key={`date-sep-${sepInfo.dayKey}-${msg.id}`}
+                  className="flex justify-center my-3 select-none animate-in fade-in duration-200"
+                >
+                  <div
+                    className={`inline-flex items-center justify-center px-3 py-1 rounded-lg text-xs font-medium shadow-xs transition-colors ${
+                      darkMode
+                        ? 'bg-[#182229] border border-[#2a3942]/70 text-[#8696a0]'
+                        : 'bg-[#ffffff] border border-[#d1d7db]/80 text-[#54656f]'
+                    }`}
+                  >
+                    {sepInfo.label}
+                  </div>
+                </div>
+              )}
+              <div
+                onTouchStart={(e) => {
                 if (!isSelectionMode) {
                   const touch = e.touches[0];
                   startLongPress(msg.id, touch.clientX, touch.clientY);
@@ -2082,8 +2165,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 )}
               </div>
             </div>
-          );
-        })}
+          </React.Fragment>
+        );
+      })}
 
         <div ref={messagesEndRef} />
       </div>
@@ -2675,9 +2759,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                   darkMode ? 'bg-[#111b21] border-[#222e35]' : 'bg-[#f0f2f5] border-[#e9edef]'
                 }`}
               >
-                <span className="text-[#8696a0] block mb-1">Data e Hora (Horário de Brasília)</span>
+                <span className="text-[#8696a0] block mb-1">Data e Horário (Horário de Brasília)</span>
                 <span className="font-medium text-sm">
-                  {formatSaoPauloDate(messageDetailsModal.timestamp)} às {formatSaoPauloTime(messageDetailsModal.timestamp)}
+                  {
+                    formatMessageDetailsDateAndHour(
+                      messageDetailsModal.createdAt,
+                      messageDetailsModal.timestamp
+                    ).fullDisplay
+                  }
                 </span>
               </div>
             </div>
