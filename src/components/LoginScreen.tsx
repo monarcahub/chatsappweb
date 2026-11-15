@@ -586,12 +586,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                     : 'bg-emerald-50/80 border-emerald-200'
                 }`}
               >
-                <div className="flex items-center gap-1.5 text-xs font-bold text-[#00a884] mb-2">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-[#00a884] mb-2 tracking-wide">
                   <Gift className="w-3.5 h-3.5 shrink-0" />
-                  <span>Experimente grátis por 7 dias</span>
+                  <span>EXPERIMENTE GRÁTIS!</span>
                 </div>
 
-                {/* 3 Benefícios visuais e compactos */}
+                {/* Benefícios visuais e compactos */}
                 <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
                   <div
                     className={`px-2 py-1 rounded-lg border inline-flex items-center gap-1.5 ${
@@ -615,7 +615,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                     }`}
                   >
                     <Smartphone className="w-3 h-3 text-[#00a884] shrink-0" />
-                    <span className="font-semibold">1 canal ativo por vez</span>
+                    <span className="font-semibold">1 canal ativo</span>
+                  </div>
+                  <div
+                    className={`px-2 py-1 rounded-lg border inline-flex items-center gap-1.5 ${
+                      darkMode ? 'bg-[#202c33]/80 border-[#313d45] text-[#e9edef]' : 'bg-white border-emerald-100 text-[#111b21]'
+                    }`}
+                  >
+                    <Briefcase className="w-3 h-3 text-[#00a884] shrink-0" />
+                    <span className="font-semibold">CRM e Funil de Vendas Grátis</span>
                   </div>
                 </div>
 
