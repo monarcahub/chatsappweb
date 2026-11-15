@@ -19,7 +19,8 @@ import { LoginScreen } from './components/LoginScreen';
 import { OnboardingScreen } from './components/OnboardingScreen';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { useSupabaseChat } from './hooks/useSupabaseChat';
-import { ChannelType, Tag } from './types';
+import { useSubscriptionStatus } from './hooks/useSubscriptionStatus';
+import { ChannelType, Tag, ToolsSection } from './types';
 import { INITIAL_TAGS } from './data/mockData';
 import { supabase, isSupabaseConfigured, ensureSupabaseConfig } from './lib/supabase';
 
@@ -130,6 +131,22 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
     Array<{ id: string; name: string; type: ChannelType; is_active?: boolean }>
   >([]);
   const [hasDismissedOnboarding, setHasDismissedOnboarding] = useState(false);
+  const [toolsInitialSection, setToolsInitialSection] = useState<ToolsSection>('overview');
+  const [toolsSectionTrigger, setToolsSectionTrigger] = useState(0);
+
+  const {
+    subscriptionStatus,
+    isLoading: isSubscriptionLoading,
+    error: subscriptionError,
+    refresh: refreshSubscriptionStatus,
+  } = useSubscriptionStatus(currentAccount?.id);
+
+  const handleOpenSubscription = () => {
+    setToolsInitialSection('subscription');
+    setToolsSectionTrigger((prev) => prev + 1);
+    setActiveRailTab('tools');
+    setSelectedId(null);
+  };
 
   // Consulta canais reais vinculados à empresa no Supabase
   const refreshChannelsCount = async () => {
@@ -535,6 +552,10 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
                 if (tab === 'brain') {
                   setIsAIBrainOpen(true);
                 }
+                if (tab === 'tools') {
+                  setToolsInitialSection('overview');
+                  setToolsSectionTrigger((prev) => prev + 1);
+                }
                 setActiveRailTab(tab);
               }}
               unreadChatsCount={totalUnreadCount}
@@ -580,6 +601,8 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               onToggleAIGlobal={handleToggleAIGlobal}
               onOpenBrain={() => setIsAIBrainOpen(true)}
               onReactivateChannelAI={() => reloadSupabaseData()}
+              subscriptionStatus={subscriptionStatus}
+              onOpenSubscription={handleOpenSubscription}
             />
           ) : activeRailTab === 'tools' ? (
             <ToolsView
@@ -588,6 +611,12 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               currentAccount={currentAccount}
               onOpenChannels={() => setActiveRailTab('connections')}
               onOpenProfile={() => setIsProfileOpen(true)}
+              initialSection={toolsInitialSection}
+              initialSectionTrigger={toolsSectionTrigger}
+              subscriptionStatus={subscriptionStatus}
+              isSubscriptionLoading={isSubscriptionLoading}
+              subscriptionError={subscriptionError}
+              onRefreshSubscription={refreshSubscriptionStatus}
             />
           ) : activeRailTab === 'settings' ? (
             <SettingsSidebar
@@ -601,6 +630,31 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               onSwitchAccount={onSwitchAccount}
               onLogout={onLogout}
               onOpenProfile={() => setIsProfileOpen(true)}
+              onOpenSubscription={handleOpenSubscription}
+              subscriptionStatus={subscriptionStatus}
+            />
+          ) : isMobile &&
+            channelsCount === 0 &&
+            !hasDismissedOnboarding &&
+            !selectedId &&
+            conversations.length === 0 ? (
+            <OnboardingScreen
+              darkMode={darkMode}
+              account={currentAccount}
+              user={user}
+              onOpenChannels={() => setActiveRailTab('connections')}
+              onOpenAIBrain={() => setIsAIBrainOpen(true)}
+              onGoToConversations={() => {
+                setActiveRailTab('chats');
+                setHasDismissedOnboarding(true);
+              }}
+              onSkipToDashboard={() => {
+                setActiveRailTab('chats');
+                setHasDismissedOnboarding(true);
+              }}
+              subscriptionStatus={subscriptionStatus}
+              isSubscriptionLoading={isSubscriptionLoading}
+              onOpenSubscription={handleOpenSubscription}
             />
           ) : (
             <Sidebar
@@ -643,6 +697,8 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               onToggleMute={toggleMute}
               onToggleMarkUnread={toggleMarkUnread}
               onUpdateContact={updateContact}
+              subscriptionStatus={subscriptionStatus}
+              onOpenSubscription={handleOpenSubscription}
             />
           )}
         </div>
@@ -658,7 +714,7 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               darkMode={darkMode}
               account={currentAccount}
               user={user}
-              onOpenChannels={() => setActiveRailTab('channels')}
+              onOpenChannels={() => setActiveRailTab('connections')}
               onOpenAIBrain={() => setIsAIBrainOpen(true)}
               onGoToConversations={() => {
                 setActiveRailTab('chats');
@@ -668,6 +724,9 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
                 setActiveRailTab('chats');
                 setHasDismissedOnboarding(true);
               }}
+              subscriptionStatus={subscriptionStatus}
+              isSubscriptionLoading={isSubscriptionLoading}
+              onOpenSubscription={handleOpenSubscription}
             />
           ) : (
             <ChatArea
@@ -888,6 +947,10 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
               setIsAIBrainOpen(true);
               setActiveRailTab('brain');
             } else {
+              if (tab === 'tools') {
+                setToolsInitialSection('overview');
+                setToolsSectionTrigger((prev) => prev + 1);
+              }
               setActiveRailTab(tab);
             }
           }}

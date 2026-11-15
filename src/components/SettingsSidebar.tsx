@@ -24,8 +24,9 @@ import {
   Trash2,
   MoreVertical,
   Volume2,
+  CreditCard,
 } from 'lucide-react';
-import { Account, AuthUser } from '../types';
+import { Account, AuthUser, AccountSubscriptionStatus } from '../types';
 import { UserAvatar } from './UserAvatar';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -47,6 +48,8 @@ interface SettingsSidebarProps {
   onSwitchAccount?: (id: string) => void;
   onLogout?: () => void;
   onOpenProfile?: () => void;
+  onOpenSubscription?: () => void;
+  subscriptionStatus?: AccountSubscriptionStatus | null;
 }
 
 type SettingModalType =
@@ -72,6 +75,8 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
   onSwitchAccount,
   onLogout,
   onOpenProfile,
+  onOpenSubscription,
+  subscriptionStatus,
 }) => {
   const { updateUserProfile } = useAuth();
   const [searchQuery, setSearchQuery] = useState('');
@@ -102,6 +107,21 @@ export const SettingsSidebar: React.FC<SettingsSidebarProps> = ({
         setActiveModal('commercial_tools');
       },
     },
+    ...(onOpenSubscription
+      ? [
+          {
+            id: 'subscription' as SettingModalType,
+            title: 'Minha assinatura',
+            description: subscriptionStatus?.isTrial
+              ? `${subscriptionStatus.planName} • ${subscriptionStatus.daysRemaining ?? 7}d restantes`
+              : subscriptionStatus?.isLegacy
+              ? 'Operação ativa da empresa'
+              : 'Plano, franquia de IA e canais',
+            icon: CreditCard,
+            onClick: () => onOpenSubscription(),
+          },
+        ]
+      : []),
     {
       id: 'account' as SettingModalType,
       title: 'Conta',

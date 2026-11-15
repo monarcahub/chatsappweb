@@ -8,6 +8,7 @@ import {
   Lock,
   LogOut,
   Sparkles,
+  CreditCard,
 } from 'lucide-react';
 
 interface TopMoreMenuDropdownProps {
@@ -17,6 +18,7 @@ interface TopMoreMenuDropdownProps {
   onOpenSettings: () => void;
   onOpenProfile: () => void;
   onOpenCRM?: () => void;
+  onOpenSubscription?: () => void;
   onMarkAllAsRead: () => void;
   onLockApp: () => void;
   onLogout?: () => void;
@@ -33,6 +35,7 @@ export const TopMoreMenuDropdown: React.FC<TopMoreMenuDropdownProps> = ({
   onOpenSettings,
   onOpenProfile,
   onOpenCRM,
+  onOpenSubscription,
   onMarkAllAsRead,
   onLockApp,
   onLogout,
@@ -163,6 +166,27 @@ export const TopMoreMenuDropdown: React.FC<TopMoreMenuDropdownProps> = ({
             <span className="font-medium block leading-tight">Ferramentas comerciais</span>
             <span className="text-[11px] text-[#8696a0] block truncate">
               Funil CRM, etiquetas e respostas
+            </span>
+          </div>
+        </button>
+      )}
+
+      {/* 3.5 Minha Assinatura */}
+      {onOpenSubscription && (
+        <button
+          id="dropdown-item-subscription"
+          onClick={() => {
+            onClose();
+            onOpenSubscription();
+          }}
+          className={`w-full px-4 py-2.5 flex items-center gap-3.5 transition-colors text-left cursor-pointer group ${hoverClasses}`}
+          role="menuitem"
+        >
+          <CreditCard className={`w-5 h-5 shrink-0 ${iconColor} group-hover:text-[#00a884] transition-colors`} />
+          <div className="flex-1 min-w-0">
+            <span className="font-medium block leading-tight">Minha assinatura</span>
+            <span className="text-[11px] text-[#8696a0] block truncate">
+              Plano, franquia e avaliação
             </span>
           </div>
         </button>

@@ -26,9 +26,10 @@ import {
   ArchiveRestore,
   FolderArchive,
   ArrowLeft,
-  Filter
+  Filter,
+  Sparkles,
 } from 'lucide-react';
-import { Conversation, ChannelType, ConversationStatus, Account, CRMStage } from '../types';
+import { Conversation, ChannelType, ConversationStatus, Account, CRMStage, AccountSubscriptionStatus } from '../types';
 
 export const CRM_STAGES: Array<{ key: CRMStage; label: string; color: string }> = [
   { key: 'novo_lead', label: '1. Novo Lead', color: '#3b82f6' },
@@ -86,6 +87,8 @@ interface SidebarProps {
   onToggleMute?: (id: string, duration?: string) => void;
   onToggleMarkUnread?: (id: string) => void;
   onUpdateContact?: (id: string, data: { name: string; phone?: string }) => void;
+  subscriptionStatus?: AccountSubscriptionStatus | null;
+  onOpenSubscription?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -125,6 +128,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggleMute,
   onToggleMarkUnread,
   onUpdateContact,
+  subscriptionStatus,
+  onOpenSubscription,
 }) => {
   const [isViewingArchived, setIsViewingArchived] = useState(false);
   const [showNotificationBanner, setShowNotificationBanner] = useState(() => {
@@ -716,6 +721,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 if (onOpenProfile) onOpenProfile();
               }}
               onOpenCRM={onOpenCRM}
+              onOpenSubscription={onOpenSubscription}
               onMarkAllAsRead={() => {
                 if (onMarkAllAsRead) onMarkAllAsRead();
                 setToastMessage('Todas as conversas foram marcadas como lidas');
@@ -735,6 +741,34 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Discreet Trial Indicator Bar (Only for accounts in trial, never for legacy_grandfathered) */}
+      {subscriptionStatus && subscriptionStatus.isTrial && !subscriptionStatus.isLegacy && (
+        <button
+          id="sidebar-trial-status-bar"
+          type="button"
+          onClick={onOpenSubscription}
+          className={`w-full px-3.5 py-2 border-b flex items-center justify-between gap-2 text-[11px] transition-colors cursor-pointer text-left shrink-0 ${
+            darkMode
+              ? 'bg-[#182229] hover:bg-[#1f2c34] border-[#222e35] text-[#aebac1]'
+              : 'bg-emerald-50/70 hover:bg-emerald-100/70 border-[#e9edef] text-[#3b4a54]'
+          }`}
+        >
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Sparkles className="w-3.5 h-3.5 text-[#00a884] shrink-0" />
+            <span className="truncate font-medium">
+              {subscriptionStatus.isExpired
+                ? 'Avaliação encerrada'
+                : subscriptionStatus.daysRemaining !== null
+                ? `Trial: ${subscriptionStatus.daysRemaining} ${subscriptionStatus.daysRemaining === 1 ? 'dia restante' : 'dias restantes'}`
+                : 'Avaliação gratuita ativa'}
+              {subscriptionStatus.aiQuota !== null &&
+                ` • IA ${subscriptionStatus.aiEffectiveConsumed}/${subscriptionStatus.aiQuota}`}
+            </span>
+          </div>
+          <span className="text-[#00a884] font-semibold shrink-0">Assinatura</span>
+        </button>
+      )}
 
       {/* Floating toast notification */}
       {toastMessage && (

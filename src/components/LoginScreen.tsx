@@ -685,6 +685,27 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                 Sua senha é protegida com criptografia avançada para acesso seguro e sincronização multi-dispositivo.
               </p>
 
+              {/* Resumo compacto do Período de Avaliação Gratuita */}
+              <div
+                id="register-trial-summary"
+                className={`p-3 rounded-xl border text-[11px] leading-relaxed space-y-1.5 ${
+                  darkMode
+                    ? 'bg-[#111b21]/80 border-[#00a884]/30 text-[#d1d7db]'
+                    : 'bg-emerald-50/70 border-emerald-200 text-[#111b21]'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 font-semibold text-[#00a884]">
+                  <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                  <span>Avaliação gratuita de 7 dias incluída no cadastro</span>
+                </div>
+                <ul className={`space-y-1 pl-1 ${darkMode ? 'text-[#aebac1]' : 'text-[#3b4a54]'}`}>
+                  <li>• <strong>7 dias gratuitos</strong> e <strong>1 canal ativo por vez</strong> (com substituição permitida).</li>
+                  <li>• <strong>500 respostas da IA</strong> incluídas durante a avaliação.</li>
+                  <li>• <strong>Atendimento humano mantido</strong> se a franquia da IA terminar antes dos 7 dias.</li>
+                  <li>• Após os 7 dias, será necessário <strong>contratar um plano</strong> para continuar enviando mensagens; seu <strong>histórico e configurações ficam preservados</strong>.</li>
+                </ul>
+              </div>
+
               <button
                 type="submit"
                 disabled={isLoading}

@@ -30,7 +30,7 @@ import {
   Phone,
   Bot,
 } from 'lucide-react';
-import { ChannelType, Account } from '../types';
+import { ChannelType, Account, AccountSubscriptionStatus } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useMetaWhatsAppSignup } from '../hooks/useMetaWhatsAppSignup';
 import { useEvolutionWhatsApp, sanitizeEvolutionInstanceName } from '../hooks/useEvolutionWhatsApp';
@@ -49,6 +49,8 @@ interface ChannelsSidebarProps {
   onToggleAIGlobal?: (newStatus: boolean) => void;
   onOpenBrain?: () => void;
   onReactivateChannelAI?: (channelId: string, updatedCount: number) => void;
+  subscriptionStatus?: AccountSubscriptionStatus | null;
+  onOpenSubscription?: () => void;
 }
 
 interface ConnectedChannelItem {
@@ -75,6 +77,8 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
   onToggleAIGlobal,
   onOpenBrain,
   onReactivateChannelAI,
+  subscriptionStatus,
+  onOpenSubscription,
 }) => {
   const { user, availableAccounts } = useAuth();
   const [channels, setChannels] = useState<ConnectedChannelItem[]>([]);
@@ -1114,10 +1118,16 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
             <h1 className={`font-bold text-base ${darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'}`}>
               Conexões
             </h1>
-            <span className="text-[11px] text-[#00a884] font-semibold flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-[#25d366] animate-pulse" />
-              {channels.length} {channels.length === 1 ? 'Canal Ativo' : 'Canais Ativos'} • {currentAccount?.name}
-            </span>
+            {(() => {
+              const onlineCount = channels.filter((c) => c.status === 'online').length;
+              return (
+                <span className="text-[11px] text-[#00a884] font-semibold flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-[#25d366] animate-pulse" />
+                  {onlineCount} {onlineCount === 1 ? 'Canal Ativo' : 'Canais Ativos'}
+                  {channels.length !== onlineCount ? ` (${channels.length} total)` : ''} • {currentAccount?.name}
+                </span>
+              );
+            })()}
           </div>
         </div>
 
@@ -1212,6 +1222,36 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
             Empresa ativa: <strong>{currentAccount?.name}</strong>. Os canais abaixo estão vinculados diretamente à sua empresa.
           </p>
         </div>
+
+        {/* Contexto informativo de canal durante o Trial (sem bloqueios nesta etapa) */}
+        {subscriptionStatus && subscriptionStatus.isTrial && !subscriptionStatus.isLegacy && (
+          <div
+            className={`p-3 rounded-xl border text-[11px] leading-relaxed flex items-center justify-between gap-2 ${
+              darkMode
+                ? 'bg-[#182229] border-[#00a884]/30 text-[#aebac1]'
+                : 'bg-emerald-50/50 border-emerald-200 text-[#3b4a54]'
+            }`}
+          >
+            <div>
+              <span className="font-semibold text-[#00a884] block">
+                {subscriptionStatus.planName} • {subscriptionStatus.activeChannelsCount} de{' '}
+                {subscriptionStatus.maxActiveChannels ?? 1} canal ativo
+              </span>
+              <span>
+                Durante a avaliação gratuita é permitido 1 canal ativo por vez, com substituição permitida.
+              </span>
+            </div>
+            {onOpenSubscription && (
+              <button
+                type="button"
+                onClick={onOpenSubscription}
+                className="px-2.5 py-1 rounded-lg bg-[#00a884]/15 hover:bg-[#00a884]/25 text-[#00a884] font-semibold shrink-0 cursor-pointer"
+              >
+                Ver plano
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Empty State */}
         {channels.length === 0 && !isLoading && (

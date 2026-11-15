@@ -7,13 +7,12 @@ import {
   CheckCircle2,
   ArrowRight,
   ShieldCheck,
-  Zap,
-  HelpCircle,
-  ExternalLink,
   Bot,
-  UserPlus
+  Clock,
+  CreditCard,
 } from 'lucide-react';
-import { Account, AuthUser } from '../types';
+import { Account, AuthUser, AccountSubscriptionStatus } from '../types';
+import { formatSaoPauloFull } from '../utils/dateFormat';
 
 interface OnboardingScreenProps {
   darkMode: boolean;
@@ -24,6 +23,9 @@ interface OnboardingScreenProps {
   onOpenNewChat?: () => void;
   onGoToConversations?: () => void;
   onSkipToDashboard?: () => void;
+  subscriptionStatus?: AccountSubscriptionStatus | null;
+  isSubscriptionLoading?: boolean;
+  onOpenSubscription?: () => void;
 }
 
 export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
@@ -35,14 +37,18 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
   onOpenNewChat,
   onGoToConversations,
   onSkipToDashboard,
+  subscriptionStatus,
+  isSubscriptionLoading = false,
+  onOpenSubscription,
 }) => {
   const [isPlayingVideo, setIsPlayingVideo] = useState(false);
 
   const handleStartConversations = onGoToConversations || onSkipToDashboard || onOpenNewChat;
+  const showTrialBanner = Boolean(subscriptionStatus && subscriptionStatus.isTrial && !subscriptionStatus.isLegacy);
 
   return (
     <div
-      className={`h-full w-full overflow-y-auto p-4 sm:p-8 flex flex-col items-center ${
+      className={`h-full w-full overflow-y-auto p-4 pb-24 sm:p-8 flex flex-col items-center ${
         darkMode ? 'bg-[#111b21] text-[#e9edef]' : 'bg-[#f0f2f5] text-[#111b21]'
       }`}
     >
@@ -67,11 +73,11 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
               </p>
             </div>
 
-            <div className="shrink-0 flex items-center gap-3">
+            <div className="shrink-0 flex flex-wrap items-center gap-3">
               {(onSkipToDashboard || onGoToConversations) && (
                 <button
                   onClick={handleStartConversations}
-                  className={`px-4 py-3 rounded-xl border text-sm font-semibold transition-all ${
+                  className={`px-4 py-3 rounded-xl border text-sm font-semibold transition-all cursor-pointer ${
                     darkMode ? 'border-[#313d45] hover:bg-[#313d45] text-[#8696a0]' : 'border-gray-300 hover:bg-gray-100 text-gray-700'
                   }`}
                 >
@@ -80,7 +86,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
               )}
               <button
                 onClick={onOpenChannels}
-                className="px-5 py-3 rounded-xl bg-[#00a884] hover:bg-[#009374] text-white text-sm font-semibold shadow-md flex items-center gap-2 transition-all active:scale-[0.99]"
+                className="px-5 py-3 rounded-xl bg-[#00a884] hover:bg-[#009374] text-white text-sm font-semibold shadow-md flex items-center gap-2 transition-all active:scale-[0.99] cursor-pointer"
               >
                 <Smartphone className="w-4 h-4" />
                 Conectar Canal
@@ -88,6 +94,107 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
             </div>
           </div>
         </div>
+
+        {/* Trial Summary Banner (Only for accounts in trial, never for legacy_grandfathered) */}
+        {showTrialBanner && subscriptionStatus && (
+          <div
+            id="onboarding-trial-banner"
+            className={`rounded-2xl p-5 border shadow-sm transition-all ${
+              darkMode
+                ? 'bg-gradient-to-r from-[#1a2930] to-[#202c33] border-[#00a884]/35'
+                : 'bg-gradient-to-r from-emerald-50 to-white border-emerald-200'
+            }`}
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-[#00a884]/15 text-[#00a884] flex items-center justify-center shrink-0">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h2 className="text-sm font-bold">{subscriptionStatus.planName}</h2>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#00a884]/20 text-[#00a884] border border-[#00a884]/30">
+                      {subscriptionStatus.daysRemaining !== null
+                        ? `${subscriptionStatus.daysRemaining} ${subscriptionStatus.daysRemaining === 1 ? 'dia restante' : 'dias restantes'}`
+                        : '7 dias gratuitos'}
+                    </span>
+                  </div>
+                  <p className={`text-xs mt-0.5 ${darkMode ? 'text-[#8696a0]' : 'text-[#667781]'}`}>
+                    {subscriptionStatus.trialEndsAt
+                      ? `Avaliação válida até ${formatSaoPauloFull(subscriptionStatus.trialEndsAt)}`
+                      : 'Avaliação iniciada na criação da sua empresa'}
+                  </p>
+                </div>
+              </div>
+
+              {onOpenSubscription && (
+                <button
+                  type="button"
+                  onClick={onOpenSubscription}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold border flex items-center gap-1.5 shrink-0 cursor-pointer transition-colors ${
+                    darkMode
+                      ? 'border-[#00a884]/40 bg-[#111b21]/70 hover:bg-[#111b21] text-[#00a884]'
+                      : 'border-[#00a884]/40 bg-white hover:bg-emerald-50 text-[#00a884]'
+                  }`}
+                >
+                  <CreditCard className="w-3.5 h-3.5" />
+                  <span>Minha Assinatura</span>
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+              <div
+                className={`p-3 rounded-xl border ${
+                  darkMode ? 'bg-[#111b21]/70 border-[#2f3b43]' : 'bg-white border-emerald-100'
+                }`}
+              >
+                <span className="text-[11px] text-[#8696a0] flex items-center gap-1">
+                  <Clock className="w-3 h-3 text-[#00a884]" />
+                  Período Gratuito
+                </span>
+                <p className="font-bold mt-0.5">
+                  {subscriptionStatus.daysRemaining !== null
+                    ? `${subscriptionStatus.daysRemaining} de 7 dias`
+                    : '7 dias corridos'}
+                </p>
+              </div>
+              <div
+                className={`p-3 rounded-xl border ${
+                  darkMode ? 'bg-[#111b21]/70 border-[#2f3b43]' : 'bg-white border-emerald-100'
+                }`}
+              >
+                <span className="text-[11px] text-[#8696a0] flex items-center gap-1">
+                  <Bot className="w-3 h-3 text-purple-400" />
+                  Respostas da IA
+                </span>
+                <p className="font-bold mt-0.5">
+                  {isSubscriptionLoading
+                    ? '...'
+                    : `${subscriptionStatus.aiEffectiveConsumed} / ${subscriptionStatus.aiQuota ?? 500} usadas`}
+                </p>
+              </div>
+              <div
+                className={`p-3 rounded-xl border ${
+                  darkMode ? 'bg-[#111b21]/70 border-[#2f3b43]' : 'bg-white border-emerald-100'
+                }`}
+              >
+                <span className="text-[11px] text-[#8696a0] flex items-center gap-1">
+                  <Smartphone className="w-3 h-3 text-[#25d366]" />
+                  Canais Ativos
+                </span>
+                <p className="font-bold mt-0.5">
+                  {subscriptionStatus.activeChannelsCount} / {subscriptionStatus.maxActiveChannels ?? 1} ativo{' '}
+                  <span className="font-normal text-[11px] text-[#8696a0]">(substituição permitida)</span>
+                </p>
+              </div>
+            </div>
+
+            <p className={`text-[11px] mt-3 leading-relaxed ${darkMode ? 'text-[#8696a0]' : 'text-[#54656f]'}`}>
+              Se a franquia de 500 respostas da IA terminar antes dos 7 dias, o atendimento humano continua disponível. Após o período gratuito, escolha um plano para seguir operando com todo o histórico preservado.
+            </p>
+          </div>
+        )}
 
         {/* Steps Grid */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

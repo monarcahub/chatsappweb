@@ -175,3 +175,41 @@ export interface Conversation {
   updatedAt: string;
   lastMessageAt?: string;
 }
+
+export type SubscriptionStatusType =
+  | 'trialing'
+  | 'active'
+  | 'past_due'
+  | 'suspended'
+  | 'canceled'
+  | 'expired';
+
+export type ToolsSection = 'overview' | 'reports' | 'subscription' | 'billing' | 'addons';
+
+export interface AccountSubscriptionStatus {
+  accountId: string;
+  hasSubscription: boolean;
+  planId: string | null;
+  planName: string;
+  status: SubscriptionStatusType | string;
+  isTrial: boolean;
+  isLegacy: boolean;
+  isExpired: boolean;
+  trialStartedAt: string | null;
+  trialEndsAt: string | null;
+  currentPeriodStart: string | null;
+  currentPeriodEnd: string | null;
+  daysRemaining: number | null;
+  aiQuota: number | null;
+  aiConsumed: number;
+  aiActiveReservations: number;
+  aiEffectiveConsumed: number;
+  aiRemaining: number | null;
+  isQuotaExhausted: boolean;
+  maxActiveChannels: number | null;
+  activeChannelsCount: number;
+  allowChannelReplacement: boolean;
+  humanAttendancePreserved: boolean;
+  rawRpcKeys?: string[];
+}
+

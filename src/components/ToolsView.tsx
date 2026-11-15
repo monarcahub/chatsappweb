@@ -21,9 +21,11 @@ import {
   HelpCircle,
   ExternalLink,
   Zap,
+  Calendar,
 } from 'lucide-react';
-import { Account } from '../types';
+import { Account, AccountSubscriptionStatus, ToolsSection } from '../types';
 import { supabase, isSupabaseConfigured, ensureSupabaseConfig } from '../lib/supabase';
+import { formatSaoPauloFull } from '../utils/dateFormat';
 
 interface ToolsViewProps {
   darkMode: boolean;
@@ -31,9 +33,13 @@ interface ToolsViewProps {
   currentAccount?: Account | null;
   onOpenChannels?: () => void;
   onOpenProfile?: () => void;
+  initialSection?: ToolsSection;
+  initialSectionTrigger?: number;
+  subscriptionStatus?: AccountSubscriptionStatus | null;
+  isSubscriptionLoading?: boolean;
+  subscriptionError?: string | null;
+  onRefreshSubscription?: () => void;
 }
-
-type ToolsSection = 'overview' | 'reports' | 'subscription' | 'billing' | 'addons';
 
 interface UsageMetrics {
   totalMessages: number;
@@ -44,7 +50,6 @@ interface UsageMetrics {
   totalChannels: number;
   activeChannels: number;
   extraUsersCount: number;
-  accountPlan: string;
   accountCreatedAt?: string;
   isLoading: boolean;
   error?: string | null;
@@ -56,8 +61,19 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
   currentAccount,
   onOpenChannels,
   onOpenProfile,
+  initialSection = 'overview',
+  initialSectionTrigger = 0,
+  subscriptionStatus,
+  isSubscriptionLoading = false,
+  subscriptionError = null,
+  onRefreshSubscription,
 }) => {
-  const [activeSection, setActiveSection] = useState<ToolsSection>('overview');
+  const [activeSection, setActiveSection] = useState<ToolsSection>(initialSection);
+
+  useEffect(() => {
+    setActiveSection(initialSection);
+  }, [initialSection, initialSectionTrigger]);
+
   const [metrics, setMetrics] = useState<UsageMetrics>({
     totalMessages: 0,
     aiMessages: 0,
@@ -67,14 +83,13 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
     totalChannels: 0,
     activeChannels: 0,
     extraUsersCount: 0,
-    accountPlan: currentAccount?.plan || 'pro',
     accountCreatedAt: currentAccount?.createdAt,
     isLoading: true,
     error: null,
   });
 
   const loadRealMetrics = async () => {
-    if (!currentAccount?.id) {
+    if (!currentAccount?.id || currentAccount.id === 'all') {
       setMetrics((prev) => ({ ...prev, isLoading: false }));
       return;
     }
@@ -200,7 +215,6 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
         totalChannels: totalChs,
         activeChannels: activeChs,
         extraUsersCount: extraUsers,
-        accountPlan: planName,
         accountCreatedAt: createdAt,
         isLoading: false,
         error: null,
@@ -273,11 +287,14 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
         </div>
 
         <button
-          onClick={loadRealMetrics}
-          disabled={metrics.isLoading}
+          onClick={() => {
+            loadRealMetrics();
+            onRefreshSubscription?.();
+          }}
+          disabled={metrics.isLoading || isSubscriptionLoading}
           className={`p-2 rounded-full transition-colors cursor-pointer ${
             darkMode ? 'hover:bg-[#374248] text-[#8696a0]' : 'hover:bg-gray-200 text-[#54656f]'
-          } ${metrics.isLoading ? 'animate-spin' : ''}`}
+          } ${metrics.isLoading || isSubscriptionLoading ? 'animate-spin' : ''}`}
           title="Atualizar dados reais"
         >
           <RefreshCw className="w-4 h-4" />
@@ -551,82 +568,341 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
         {/* =================================================================== */}
         {activeSection === 'subscription' && (
           <div className="space-y-4 animate-in fade-in duration-150">
-            {/* Card do Plano Atual */}
-            <div
-              className={`p-5 rounded-2xl border relative overflow-hidden ${
-                darkMode
-                  ? 'bg-gradient-to-br from-[#202c33] to-[#182229] border-[#00a884]/40'
-                  : 'bg-gradient-to-br from-white to-gray-50 border-[#00a884]/30'
-              }`}
-            >
-              <div className="flex items-start justify-between gap-3 mb-4">
-                <div>
-                  <span className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-[#00a884]/20 text-[#00a884] border border-[#00a884]/30 inline-block mb-1.5">
-                    Plano Ativo
-                  </span>
-                  <h3 className="text-xl font-bold">Plano {metrics.accountPlan.toUpperCase()}</h3>
-                  <p className="text-xs text-[#8696a0]">Empresa: {currentAccount?.name}</p>
+            {/* Aviso caso esteja na visão agregada de todas as empresas */}
+            {currentAccount?.id === 'all' ? (
+              <div
+                className={`p-5 rounded-2xl border text-xs space-y-2 ${
+                  darkMode ? 'bg-[#202c33] border-[#2f3b43] text-[#aebac1]' : 'bg-white border-[#e9edef] text-[#54656f]'
+                }`}
+              >
+                <div className="flex items-center gap-2 font-bold text-sm text-[#00a884]">
+                  <CreditCard className="w-4 h-4" />
+                  <span>Selecione uma empresa específica</span>
                 </div>
-                <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 shrink-0">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Regular</span>
-                </span>
-              </div>
-
-              {/* Detalhes da conta */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs pt-3 border-t border-gray-700/30">
-                <div>
-                  <span className="text-[#8696a0] block">Início da Conta:</span>
-                  <span className="font-semibold">{formattedCreationDate}</span>
-                </div>
-                <div>
-                  <span className="text-[#8696a0] block">Canais Vinculados:</span>
-                  <span className="font-semibold">
-                    {metrics.activeChannels} de {metrics.totalChannels} ativos
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Estrutura Preparada para Período de Avaliação (7 dias) e Franquias */}
-            <div
-              className={`p-4 rounded-xl border ${
-                darkMode ? 'bg-[#202c33] border-[#2f3b43]' : 'bg-white border-[#e9edef]'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-[#00a884]" />
-                  <h4 className="font-bold text-xs">Estrutura de Avaliação & Planos Futuros</h4>
-                </div>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#374248] text-[#8696a0]">
-                  Preparado
-                </span>
-              </div>
-              <ul className="text-xs text-[#8696a0] space-y-1.5 list-disc list-inside">
-                <li>Período de avaliação de 7 dias para novas contas</li>
-                <li>Limite de 1 canal conectado durante o trial</li>
-                <li>Franquia comercial de 500 mensagens de IA</li>
-                <li>Sem bloqueios automáticos ou cobranças nesta versão</li>
-              </ul>
-            </div>
-
-            {/* Upgrade de Plano */}
-            <div
-              className={`p-4 rounded-xl border border-dashed flex items-center justify-between gap-3 ${
-                darkMode ? 'bg-[#202c33]/40 border-[#2f3b43]' : 'bg-white/40 border-[#e9edef]'
-              }`}
-            >
-              <div>
-                <h4 className="font-bold text-xs mb-0.5">Deseja alterar limites ou fazer upgrade?</h4>
-                <p className="text-[11px] text-[#8696a0]">
-                  Contate o suporte comercial para ajustes de plano e capacidade da sua empresa.
+                <p className="leading-relaxed">
+                  Você está visualizando o painel consolidado de empresas. Selecione uma empresa específica no seletor superior para consultar o plano, franquia e canais daquela conta.
                 </p>
               </div>
-              <span className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#374248] text-[#8696a0] shrink-0">
-                Em breve
-              </span>
-            </div>
+            ) : (
+              <>
+                {/* Erro não-bloqueante ao consultar assinatura */}
+                {subscriptionError && (
+                  <div
+                    className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 text-xs ${
+                      darkMode
+                        ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+                        : 'bg-amber-50 border-amber-200 text-amber-900'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                      <span>{subscriptionError}</span>
+                    </div>
+                    {onRefreshSubscription && (
+                      <button
+                        type="button"
+                        onClick={onRefreshSubscription}
+                        className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 font-semibold shrink-0 cursor-pointer"
+                      >
+                        Tentar novamente
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Estado de carregamento inicial não-bloqueante */}
+                {isSubscriptionLoading && !subscriptionStatus ? (
+                  <div
+                    className={`p-5 rounded-2xl border space-y-3 animate-pulse ${
+                      darkMode ? 'bg-[#202c33] border-[#2f3b43]' : 'bg-white border-[#e9edef]'
+                    }`}
+                  >
+                    <div className="h-4 w-28 rounded bg-[#374248]/60" />
+                    <div className="h-6 w-52 rounded bg-[#374248]/60" />
+                    <div className="grid grid-cols-2 gap-3 pt-2">
+                      <div className="h-12 rounded-xl bg-[#374248]/40" />
+                      <div className="h-12 rounded-xl bg-[#374248]/40" />
+                    </div>
+                  </div>
+                ) : subscriptionStatus?.isLegacy ? (
+                  /* ========================================================= */
+                  /* CASO 1: EMPRESA LEGADA (legacy_grandfathered)             */
+                  /* Exibe apenas operação ativa — sem contadores de trial!     */
+                  /* ========================================================= */
+                  <div
+                    id="subscription-legacy-card"
+                    className={`p-5 rounded-2xl border relative overflow-hidden ${
+                      darkMode
+                        ? 'bg-gradient-to-br from-[#202c33] to-[#182229] border-[#00a884]/40'
+                        : 'bg-gradient-to-br from-white to-gray-50 border-[#00a884]/30'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3 mb-4">
+                      <div>
+                        <span className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-[#00a884]/20 text-[#00a884] border border-[#00a884]/30 inline-block mb-1.5">
+                          Operação Contínua
+                        </span>
+                        <h3 className="text-xl font-bold">{subscriptionStatus.planName}</h3>
+                        <p className="text-xs text-[#8696a0]">Empresa: {currentAccount?.name}</p>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 shrink-0">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>Operação Ativa</span>
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs pt-3 border-t border-gray-700/30">
+                      <div>
+                        <span className="text-[#8696a0] block">Início da Conta:</span>
+                        <span className="font-semibold">{formattedCreationDate}</span>
+                      </div>
+                      <div>
+                        <span className="text-[#8696a0] block">Canais Conectados:</span>
+                        <span className="font-semibold">
+                          {subscriptionStatus.activeChannelsCount} {subscriptionStatus.activeChannelsCount === 1 ? 'canal ativo' : 'canais ativos'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <p className="text-xs text-[#8696a0] mt-4 pt-3 border-t border-gray-700/20 leading-relaxed">
+                      Sua empresa opera com ambiente preservado e funcionamento contínuo, sem restrições de avaliação gratuita ou contagem regressiva de expiração.
+                    </p>
+                  </div>
+                ) : subscriptionStatus?.isTrial ? (
+                  /* ========================================================= */
+                  /* CASO 2: CONTA EM PERÍODO DE AVALIAÇÃO (trial_7d)          */
+                  /* ========================================================= */
+                  <>
+                    <div
+                      id="subscription-trial-card"
+                      className={`p-5 rounded-2xl border relative overflow-hidden ${
+                        darkMode
+                          ? 'bg-gradient-to-br from-[#202c33] to-[#182229] border-[#00a884]/40'
+                          : 'bg-gradient-to-br from-white to-gray-50 border-[#00a884]/30'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3 mb-4 flex-wrap">
+                        <div>
+                          <span className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-[#00a884]/20 text-[#00a884] border border-[#00a884]/30 inline-block mb-1.5">
+                            Avaliação Gratuita
+                          </span>
+                          <h3 className="text-xl font-bold">{subscriptionStatus.planName}</h3>
+                          <p className="text-xs text-[#8696a0]">Empresa: {currentAccount?.name}</p>
+                        </div>
+
+                        {subscriptionStatus.isExpired ? (
+                          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-500/20 text-rose-400 border border-rose-500/30 flex items-center gap-1 shrink-0">
+                            <AlertCircle className="w-3.5 h-3.5" />
+                            <span>Avaliação Encerrada</span>
+                          </span>
+                        ) : subscriptionStatus.isQuotaExhausted ? (
+                          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-1 shrink-0">
+                            <Clock className="w-3.5 h-3.5" />
+                            <span>Franquia IA Atingida</span>
+                          </span>
+                        ) : (
+                          <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 shrink-0">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>Avaliação Ativa</span>
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Datas e métricas principais do trial */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs pt-3 border-t border-gray-700/30">
+                        <div>
+                          <span className="text-[#8696a0] flex items-center gap-1">
+                            <Calendar className="w-3.5 h-3.5 text-[#00a884]" />
+                            Início da Avaliação:
+                          </span>
+                          <span className="font-semibold block mt-0.5">
+                            {subscriptionStatus.trialStartedAt
+                              ? formatSaoPauloFull(subscriptionStatus.trialStartedAt)
+                              : formattedCreationDate}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[#8696a0] flex items-center gap-1">
+                            <Clock className="w-3.5 h-3.5 text-[#00a884]" />
+                            Vencimento da Avaliação:
+                          </span>
+                          <span className="font-semibold block mt-0.5">
+                            {subscriptionStatus.trialEndsAt
+                              ? formatSaoPauloFull(subscriptionStatus.trialEndsAt)
+                              : '7 dias corridos'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[#8696a0] block">Tempo Restante:</span>
+                          <span className="font-semibold text-[#00a884]">
+                            {subscriptionStatus.isExpired || subscriptionStatus.daysRemaining === 0
+                              ? 'Período encerrado'
+                              : subscriptionStatus.daysRemaining !== null
+                              ? `${subscriptionStatus.daysRemaining} ${subscriptionStatus.daysRemaining === 1 ? 'dia restante' : 'dias restantes'}`
+                              : '7 dias'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-[#8696a0] block">Canais Ativos:</span>
+                          <span className="font-semibold">
+                            {subscriptionStatus.activeChannelsCount} de {subscriptionStatus.maxActiveChannels ?? 1}{' '}
+                            <span className="font-normal text-[#8696a0]">
+                              ({subscriptionStatus.allowChannelReplacement ? 'substituição permitida' : 'limite fixo'})
+                            </span>
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Franquia de Respostas da IA */}
+                    <div
+                      className={`p-4 rounded-xl border space-y-3 ${
+                        darkMode ? 'bg-[#202c33] border-[#2f3b43]' : 'bg-white border-[#e9edef]'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <Bot className="w-4 h-4 text-purple-400" />
+                          <h4 className="font-bold text-xs">Franquia de Respostas da IA</h4>
+                        </div>
+                        <span className="text-xs font-bold">
+                          {subscriptionStatus.aiEffectiveConsumed} / {subscriptionStatus.aiQuota ?? 500}
+                        </span>
+                      </div>
+
+                      {(() => {
+                        const quota = subscriptionStatus.aiQuota ?? 500;
+                        const used = subscriptionStatus.aiEffectiveConsumed;
+                        const pct = quota > 0 ? Math.min(100, Math.round((used / quota) * 100)) : 0;
+                        const barColor =
+                          pct >= 100 ? 'bg-rose-500' : pct >= 80 ? 'bg-amber-500' : 'bg-[#00a884]';
+                        return (
+                          <div className="space-y-1.5">
+                            <div className="h-2.5 w-full rounded-full bg-black/25 overflow-hidden">
+                              <div
+                                className={`h-full transition-all duration-300 ${barColor}`}
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                            <div className="flex items-center justify-between text-[11px] text-[#8696a0]">
+                              <span>{pct}% da franquia utilizada</span>
+                              <span>
+                                {subscriptionStatus.aiRemaining !== null
+                                  ? `${subscriptionStatus.aiRemaining} respostas restantes`
+                                  : ''}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      <p className="text-xs text-[#8696a0] leading-relaxed">
+                        {subscriptionStatus.isQuotaExhausted
+                          ? 'A franquia de 500 respostas da IA foi atingida. Seu atendimento humano permanece ativo durante o período de avaliação.'
+                          : 'Se as 500 respostas da IA forem utilizadas antes dos 7 dias, o atendimento humano continua disponível normalmente.'}
+                      </p>
+                    </div>
+
+                    {/* Regras do período de avaliação */}
+                    <div
+                      className={`p-4 rounded-xl border ${
+                        darkMode ? 'bg-[#202c33] border-[#2f3b43]' : 'bg-white border-[#e9edef]'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 mb-2">
+                        <ShieldCheck className="w-4 h-4 text-[#00a884]" />
+                        <h4 className="font-bold text-xs">Regras do Período de Avaliação</h4>
+                      </div>
+                      <ul className="text-xs text-[#8696a0] space-y-1.5 list-disc list-inside">
+                        <li>7 dias corridos gratuitos a partir do cadastro da empresa</li>
+                        <li>1 canal ativo por vez, com substituição permitida em Conexões</li>
+                        <li>500 respostas da IA incluídas, sem acumulação</li>
+                        <li>Atendimento humano preservado caso a franquia da IA termine antes dos 7 dias</li>
+                        <li>Após o encerramento do trial, seu histórico e configurações permanecem preservados para contratação de plano</li>
+                      </ul>
+                    </div>
+                  </>
+                ) : (
+                  /* ========================================================= */
+                  /* CASO 3: OUTRO PLANO / ASSINATURA ATIVA                    */
+                  /* ========================================================= */
+                  <div
+                    className={`p-5 rounded-2xl border relative overflow-hidden ${
+                      darkMode
+                        ? 'bg-gradient-to-br from-[#202c33] to-[#182229] border-[#00a884]/40'
+                        : 'bg-gradient-to-br from-white to-gray-50 border-[#00a884]/30'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3 mb-4">
+                      <div>
+                        <span className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-[#00a884]/20 text-[#00a884] border border-[#00a884]/30 inline-block mb-1.5">
+                          Assinatura
+                        </span>
+                        <h3 className="text-xl font-bold">
+                          {subscriptionStatus?.planName || 'Plano Ativo'}
+                        </h3>
+                        <p className="text-xs text-[#8696a0]">Empresa: {currentAccount?.name}</p>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 shrink-0">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>Ativo</span>
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs pt-3 border-t border-gray-700/30">
+                      <div>
+                        <span className="text-[#8696a0] block">Início da Conta:</span>
+                        <span className="font-semibold">{formattedCreationDate}</span>
+                      </div>
+                      <div>
+                        <span className="text-[#8696a0] block">Canais Ativos:</span>
+                        <span className="font-semibold">
+                          {subscriptionStatus?.activeChannelsCount ?? metrics.activeChannels}
+                          {subscriptionStatus?.maxActiveChannels
+                            ? ` de ${subscriptionStatus.maxActiveChannels}`
+                            : ` de ${metrics.totalChannels} cadastrados`}
+                        </span>
+                      </div>
+                      {subscriptionStatus?.aiQuota !== null && subscriptionStatus?.aiQuota !== undefined && (
+                        <div>
+                          <span className="text-[#8696a0] block">Respostas da IA no ciclo:</span>
+                          <span className="font-semibold">
+                            {subscriptionStatus.aiEffectiveConsumed} / {subscriptionStatus.aiQuota}
+                          </span>
+                        </div>
+                      )}
+                      {subscriptionStatus?.currentPeriodEnd && (
+                        <div>
+                          <span className="text-[#8696a0] block">Fim do ciclo atual:</span>
+                          <span className="font-semibold">
+                            {formatSaoPauloFull(subscriptionStatus.currentPeriodEnd)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Upgrade / Contratação de Plano (sem gateway nesta etapa) */}
+                {!subscriptionStatus?.isLegacy && (
+                  <div
+                    className={`p-4 rounded-xl border border-dashed flex items-center justify-between gap-3 ${
+                      darkMode ? 'bg-[#202c33]/40 border-[#2f3b43]' : 'bg-white/40 border-[#e9edef]'
+                    }`}
+                  >
+                    <div>
+                      <h4 className="font-bold text-xs mb-0.5">Deseja contratar ou fazer upgrade de plano?</h4>
+                      <p className="text-[11px] text-[#8696a0]">
+                        A contratação direta estará disponível em breve. Entre em contato com o suporte comercial para ajustar os limites da sua empresa.
+                      </p>
+                    </div>
+                    <span className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#374248] text-[#8696a0] shrink-0">
+                      Em breve
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
 
