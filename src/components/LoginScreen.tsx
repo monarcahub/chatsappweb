@@ -1,23 +1,28 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   MessageSquare,
   Lock,
   Mail,
   ArrowRight,
+  ArrowLeft,
   Sparkles,
   UserPlus,
   LogIn,
   X,
   Shield,
-  FileText,
   Eye,
   EyeOff,
   AlertCircle,
-  Phone,
   Building2,
   Briefcase,
   UserCheck,
-  Info
+  Info,
+  Gift,
+  Bot,
+  Smartphone,
+  ChevronDown,
+  ChevronUp,
+  User,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
@@ -26,9 +31,12 @@ interface LoginScreenProps {
 }
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => {
-  const { login, registerAccount, availableAccounts } = useAuth();
+  const { login, registerAccount } = useAuth();
 
   const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [registerStep, setRegisterStep] = useState<1 | 2 | 3>(1);
+  const [isTrialRulesOpen, setIsTrialRulesOpen] = useState(false);
+
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -52,6 +60,36 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
   // Estado para detecção de empresa possivelmente já cadastrada
   const [duplicateWarning, setDuplicateWarning] = useState<{ message: string; detail: string } | null>(null);
   const [isAlreadyMemberModalOpen, setIsAlreadyMemberModalOpen] = useState(false);
+
+  // Refs para foco e rolagem adequados ao navegar entre etapas
+  const cardTopRef = useRef<HTMLDivElement>(null);
+  const companyNameInputRef = useRef<HTMLInputElement>(null);
+  const adminNameInputRef = useRef<HTMLInputElement>(null);
+  const passwordInputRef = useRef<HTMLInputElement>(null);
+  const prevStepRef = useRef<1 | 2 | 3>(1);
+
+  useEffect(() => {
+    if (mode !== 'register' || duplicateWarning) return;
+    if (prevStepRef.current !== registerStep) {
+      prevStepRef.current = registerStep;
+      const targetInput =
+        registerStep === 1
+          ? companyNameInputRef.current
+          : registerStep === 2
+          ? adminNameInputRef.current
+          : passwordInputRef.current;
+
+      requestAnimationFrame(() => {
+        if (cardTopRef.current) {
+          const rect = cardTopRef.current.getBoundingClientRect();
+          if (rect.top < 0 || rect.top > window.innerHeight * 0.4) {
+            cardTopRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          }
+        }
+        targetInput?.focus({ preventScroll: true });
+      });
+    }
+  }, [registerStep, mode, duplicateWarning]);
 
   // Lista de países com DDI, bandeiras e placeholders
   const COUNTRY_OPTIONS = [
@@ -106,9 +144,73 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
     }
   };
 
+  const validateRegisterStep = (step: 1 | 2 | 3): boolean => {
+    if (step === 1) {
+      if (!newCompanyName.trim()) {
+        setRegisterError('Por favor informe o nome da empresa.');
+        companyNameInputRef.current?.focus();
+        return false;
+      }
+      return true;
+    }
+
+    if (step === 2) {
+      if (!newAdminName.trim()) {
+        setRegisterError('Por favor informe seu nome (Gestor).');
+        adminNameInputRef.current?.focus();
+        return false;
+      }
+      const digits = newWhatsappPhone.trim().replace(/\D/g, '');
+      if (digits.length < 6) {
+        setRegisterError('Por favor informe um WhatsApp/telefone comercial válido.');
+        return false;
+      }
+      const cleanMail = newEmail.trim();
+      if (!cleanMail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanMail)) {
+        setRegisterError('Por favor informe um e-mail corporativo válido.');
+        return false;
+      }
+      return true;
+    }
+
+    if (!newPassword || newPassword.length < 6) {
+      setRegisterError('A senha de acesso deve conter pelo menos 6 caracteres.');
+      return false;
+    }
+    if (newPassword !== newConfirmPassword) {
+      setRegisterError('A confirmação de senha não coincide com a senha digitada.');
+      return false;
+    }
+    return true;
+  };
+
+  const handleNextStep = () => {
+    if (isLoading) return;
+    setRegisterError(null);
+    if (!validateRegisterStep(registerStep)) return;
+    if (registerStep < 3) {
+      setRegisterStep((prev) => (prev === 1 ? 2 : 3));
+    }
+  };
+
+  const handlePrevStep = () => {
+    if (isLoading) return;
+    setRegisterError(null);
+    if (registerStep > 1) {
+      setRegisterStep((prev) => (prev === 3 ? 2 : 1));
+    }
+  };
+
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isLoading) return;
+
+    // Se ainda não estiver na Etapa 3 (ex: Enter no teclado), apenas valida e avança sem chamar RPC/signUp
+    if (registerStep < 3) {
+      handleNextStep();
+      return;
+    }
+
     setRegisterError(null);
     setDuplicateWarning(null);
 
@@ -118,18 +220,27 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
     const cleanPhone = newWhatsappPhone.trim();
     const digits = cleanPhone.replace(/\D/g, '');
 
-    if (!cleanCompany || !cleanMail) {
-      setRegisterError('Por favor preencha o nome da empresa e o e-mail corporativo.');
+    if (!cleanCompany) {
+      setRegisterStep(1);
+      setRegisterError('Por favor preencha o nome da empresa.');
       return;
     }
 
     if (!cleanAdmin) {
+      setRegisterStep(2);
       setRegisterError('Por favor informe seu nome (Gestor).');
       return;
     }
 
     if (digits.length < 6) {
+      setRegisterStep(2);
       setRegisterError('Por favor informe um WhatsApp/telefone comercial válido.');
+      return;
+    }
+
+    if (!cleanMail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanMail)) {
+      setRegisterStep(2);
+      setRegisterError('Por favor informe um e-mail corporativo válido.');
       return;
     }
 
@@ -180,6 +291,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
     }
   };
 
+  // Identifica etapa relacionada caso um erro final se refira a dados de etapas anteriores
+  const getErrorTargetStep = (errorMsg: string | null): 1 | 2 | null => {
+    if (!errorMsg) return null;
+    const lower = errorMsg.toLowerCase();
+    if (lower.includes('e-mail') || lower.includes('email') || lower.includes('whatsapp') || lower.includes('telefone') || lower.includes('gestor')) {
+      return 2;
+    }
+    if (lower.includes('empresa') && !lower.includes('espaço da empresa')) {
+      return 1;
+    }
+    return null;
+  };
+
+  const stepMeta: Record<1 | 2 | 3, { title: string; subtitle: string }> = {
+    1: { title: 'Sua empresa', subtitle: 'Informe os dados básicos do seu negócio' },
+    2: { title: 'Seus dados', subtitle: 'Contato comercial e gestor da conta' },
+    3: { title: 'Acesso', subtitle: 'Defina sua senha para começar' },
+  };
+
   return (
     <div
       className={`min-h-screen w-screen flex flex-col justify-between overflow-y-auto ${
@@ -187,18 +317,18 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
       }`}
     >
       {/* Top Brand Stripe (WhatsApp Web Style) */}
-      <div className="h-44 bg-[#00a884] w-full flex items-center px-6 sm:px-12 lg:px-20 relative shrink-0">
+      <div className="h-28 sm:h-32 bg-[#00a884] w-full flex items-center px-5 sm:px-12 lg:px-20 relative shrink-0 pb-6 sm:pb-8">
         <div className="flex items-center gap-3">
           <img
             src="https://vhibadmtznoomdanosyj.supabase.co/storage/v1/object/public/images/ChatsAppWebAI-favicon.webp"
             alt="ChatsApp Web AI"
-            className="w-10 h-10 rounded-full object-contain bg-white/20 shadow-sm p-1"
+            className="w-9 h-9 sm:w-10 sm:h-10 rounded-full object-contain bg-white/20 shadow-sm p-1"
           />
           <div>
-            <span className="text-white font-semibold text-lg sm:text-xl tracking-tight block">
+            <span className="text-white font-semibold text-base sm:text-xl tracking-tight block leading-tight">
               ChatsApp Web AI
             </span>
-            <span className="text-white/80 text-xs block font-medium">
+            <span className="text-white/85 text-[11px] sm:text-xs block font-medium">
               Plataforma Omnichannel Multi-empresa
             </span>
           </div>
@@ -206,25 +336,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
       </div>
 
       {/* Main Centered Card Container */}
-      <div className="flex-1 flex items-center justify-center px-4 -mt-20 z-10 pb-8">
+      <div ref={cardTopRef} className="flex-1 flex items-center justify-center px-3.5 sm:px-4 -mt-10 sm:-mt-12 z-10 pb-6">
         <div
-          className={`w-full max-w-md rounded-2xl shadow-2xl border p-6 sm:p-8 ${
+          className={`w-full max-w-md rounded-2xl shadow-2xl border p-5 sm:p-6 ${
             darkMode ? 'bg-[#202c33] border-[#313d45]' : 'bg-white border-[#e9edef]'
           }`}
         >
           {/* Header do Box */}
-          <div className="text-center mb-6">
-            <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-[#00a884]/15 mb-3 p-1">
+          <div className="text-center mb-4">
+            <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-[#00a884]/15 mb-2 p-1">
               <img
                 src="https://vhibadmtznoomdanosyj.supabase.co/storage/v1/object/public/images/ChatsAppWebAI-favicon.webp"
                 alt="ChatsApp Web AI Logo"
                 className="w-full h-full object-contain"
               />
             </div>
-            <h1 className="text-xl font-bold tracking-tight">
+            <h1 className="text-lg sm:text-xl font-bold tracking-tight">
               {mode === 'login' ? 'Acesse o painel da sua empresa' : 'Cadastre sua nova empresa'}
             </h1>
-            <p className="text-xs text-[#8696a0] mt-1.5 leading-relaxed">
+            <p className="text-xs text-[#8696a0] mt-1 leading-relaxed">
               {mode === 'login'
                 ? 'Entre com suas credenciais de atendente ou gestor'
                 : 'Crie seu ambiente de atendimento em poucos segundos'}
@@ -232,11 +362,18 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
           </div>
 
           {/* Segmented Control / Tabs */}
-          <div className="flex bg-[#111b21] p-1 rounded-xl border border-[#313d45] mb-6">
+          <div
+            className={`flex p-1 rounded-xl border mb-4 ${
+              darkMode ? 'bg-[#111b21] border-[#313d45]' : 'bg-[#f0f2f5] border-[#d1d7db]'
+            }`}
+          >
             <button
               type="button"
-              onClick={() => setMode('login')}
-              className={`flex-1 py-2 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 transition-all ${
+              onClick={() => {
+                setMode('login');
+                setRegisterError(null);
+              }}
+              className={`flex-1 py-2 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                 mode === 'login'
                   ? 'bg-[#00a884] text-white shadow-sm'
                   : 'text-[#8696a0] hover:text-[#e9edef]'
@@ -247,8 +384,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
             </button>
             <button
               type="button"
-              onClick={() => setMode('register')}
-              className={`flex-1 py-2 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 transition-all ${
+              onClick={() => {
+                setMode('register');
+                setLoginError(null);
+              }}
+              className={`flex-1 py-2 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
                 mode === 'register'
                   ? 'bg-[#00a884] text-white shadow-sm'
                   : 'text-[#8696a0] hover:text-[#e9edef]'
@@ -410,6 +550,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                   onClick={() => {
                     setDuplicateWarning(null);
                     setRegisterError(null);
+                    setRegisterStep(2);
                   }}
                   className={`w-full py-2.5 rounded-xl border text-xs font-semibold transition-colors cursor-pointer ${
                     darkMode
@@ -434,302 +575,458 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
               </div>
             </div>
           ) : (
-            /* Formulário de Cadastro */
-            <form onSubmit={handleRegisterSubmit} className="space-y-3">
+            /* Formulário Progressivo de Cadastro em 3 Etapas */
+            <form onSubmit={handleRegisterSubmit} noValidate className="space-y-3.5">
+              {/* Apresentação Compacta do Trial */}
+              <div
+                id="register-trial-highlight"
+                className={`p-3 rounded-xl border transition-all ${
+                  darkMode
+                    ? 'bg-[#111b21]/85 border-[#00a884]/30'
+                    : 'bg-emerald-50/80 border-emerald-200'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 text-xs font-bold text-[#00a884] mb-2">
+                  <Gift className="w-3.5 h-3.5 shrink-0" />
+                  <span>Experimente grátis por 7 dias</span>
+                </div>
+
+                {/* 3 Benefícios visuais e compactos */}
+                <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                  <div
+                    className={`px-2 py-1 rounded-lg border inline-flex items-center gap-1.5 ${
+                      darkMode ? 'bg-[#202c33]/80 border-[#313d45] text-[#e9edef]' : 'bg-white border-emerald-100 text-[#111b21]'
+                    }`}
+                  >
+                    <Sparkles className="w-3 h-3 text-[#00a884] shrink-0" />
+                    <span className="font-semibold">7 dias gratuitos</span>
+                  </div>
+                  <div
+                    className={`px-2 py-1 rounded-lg border inline-flex items-center gap-1.5 ${
+                      darkMode ? 'bg-[#202c33]/80 border-[#313d45] text-[#e9edef]' : 'bg-white border-emerald-100 text-[#111b21]'
+                    }`}
+                  >
+                    <Bot className="w-3 h-3 text-[#00a884] shrink-0" />
+                    <span className="font-semibold">500 respostas da IA</span>
+                  </div>
+                  <div
+                    className={`px-2 py-1 rounded-lg border inline-flex items-center gap-1.5 ${
+                      darkMode ? 'bg-[#202c33]/80 border-[#313d45] text-[#e9edef]' : 'bg-white border-emerald-100 text-[#111b21]'
+                    }`}
+                  >
+                    <Smartphone className="w-3 h-3 text-[#00a884] shrink-0" />
+                    <span className="font-semibold">1 canal ativo por vez</span>
+                  </div>
+                </div>
+
+                {/* Link que expande/recolhe as regras completas inline */}
+                <button
+                  type="button"
+                  onClick={() => setIsTrialRulesOpen((prev) => !prev)}
+                  aria-expanded={isTrialRulesOpen}
+                  className="mt-2 text-[11px] text-[#00a884] hover:underline font-medium inline-flex items-center gap-1 cursor-pointer"
+                >
+                  <Info className="w-3 h-3 shrink-0" />
+                  <span>Como funciona a avaliação gratuita?</span>
+                  {isTrialRulesOpen ? (
+                    <ChevronUp className="w-3 h-3 shrink-0" />
+                  ) : (
+                    <ChevronDown className="w-3 h-3 shrink-0" />
+                  )}
+                </button>
+
+                {isTrialRulesOpen && (
+                  <div
+                    id="register-trial-rules"
+                    className={`mt-2 pt-2 border-t text-[11px] leading-relaxed space-y-1 animate-in fade-in duration-150 ${
+                      darkMode ? 'border-[#313d45] text-[#aebac1]' : 'border-emerald-200 text-[#3b4a54]'
+                    }`}
+                  >
+                    <p>• O período gratuito de 7 dias começa na criação da empresa.</p>
+                    <p>• É permitido substituir o canal ativo em Conexões.</p>
+                    <p>• O atendimento humano permanece disponível após esgotar as 500 respostas da IA, enquanto o trial estiver válido.</p>
+                    <p>• Após sete dias, será necessário contratar um plano para continuar enviando mensagens pelo ChatsApp.</p>
+                    <p>• Histórico e configurações são preservados.</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Indicador Visual de Progresso (1 de 3, 2 de 3, 3 de 3) */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span
+                    className={`font-semibold flex items-center gap-1.5 ${
+                      darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'
+                    }`}
+                  >
+                    <span className="text-[#00a884]">Etapa {registerStep} de 3</span>
+                    <span className="text-[#8696a0]">•</span>
+                    <span>{stepMeta[registerStep].title}</span>
+                  </span>
+                  <span className="text-[#8696a0] hidden sm:inline">{stepMeta[registerStep].subtitle}</span>
+                </div>
+
+                <div className="grid grid-cols-3 gap-1.5" role="progressbar" aria-valuenow={registerStep} aria-valuemin={1} aria-valuemax={3}>
+                  {[1, 2, 3].map((step) => {
+                    const isCompletedOrCurrent = step <= registerStep;
+                    return (
+                      <div
+                        key={step}
+                        className={`h-1.5 rounded-full transition-all duration-200 ${
+                          isCompletedOrCurrent
+                            ? 'bg-[#00a884]'
+                            : darkMode
+                            ? 'bg-[#313d45]'
+                            : 'bg-[#d1d7db]'
+                        }`}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Exibição Clara de Erros com Atalho para Etapa Correspondente */}
               {registerError && (
-                <div className="p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-red-400 text-xs flex items-center gap-2.5 animate-in fade-in">
-                  <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
-                  <span>{registerError}</span>
+                <div className="p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-red-400 text-xs flex items-start gap-2.5 animate-in fade-in">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-red-400 mt-0.5" />
+                  <div className="flex-1 space-y-1">
+                    <span className="block leading-snug">{registerError}</span>
+                    {(() => {
+                      const targetStep = getErrorTargetStep(registerError);
+                      if (!targetStep || targetStep === registerStep) return null;
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRegisterStep(targetStep);
+                            setRegisterError(null);
+                          }}
+                          className="text-[11px] font-semibold text-[#00a884] hover:underline cursor-pointer"
+                        >
+                          Voltar para a Etapa {targetStep} para corrigir →
+                        </button>
+                      );
+                    })()}
+                  </div>
                 </div>
               )}
 
-              <div>
-                <label className="text-xs font-medium text-[#8696a0] mb-1 block">
-                  Nome da Empresa
-                </label>
-                <div
-                  className={`flex items-center gap-2.5 px-3.5 py-2 rounded-xl border transition-colors ${
-                    darkMode
-                      ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
-                      : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
-                  }`}
-                >
-                  <Building2 className="w-4 h-4 text-[#8696a0] shrink-0" />
-                  <input
-                    type="text"
-                    required
-                    placeholder="Ex: Prime Odonto, Imóveis Alpha"
-                    value={newCompanyName}
-                    onChange={(e) => {
-                      setNewCompanyName(e.target.value);
-                      if (registerError) setRegisterError(null);
-                    }}
-                    className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
-                      darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'
-                    }`}
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-medium text-[#8696a0] mb-1 block">
-                    Segmento / Ramo
-                  </label>
-                  <div
-                    className={`flex items-center gap-2 px-3 py-2 rounded-xl border transition-colors ${
-                      darkMode
-                        ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
-                        : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
-                    }`}
-                  >
-                    <Briefcase className="w-4 h-4 text-[#8696a0] shrink-0" />
-                    <input
-                      type="text"
-                      placeholder="Ex: Saúde, Imóveis"
-                      value={newCompanySegment}
-                      onChange={(e) => setNewCompanySegment(e.target.value)}
-                      className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
-                        darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'
+              {/* ETAPA 1 — Sua empresa */}
+              {registerStep === 1 && (
+                <div className="space-y-3 animate-in fade-in duration-150">
+                  <div>
+                    <label className="text-xs font-medium text-[#8696a0] mb-1 block">
+                      Nome da Empresa
+                    </label>
+                    <div
+                      className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border transition-colors ${
+                        darkMode
+                          ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
+                          : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
                       }`}
-                    />
+                    >
+                      <Building2 className="w-4 h-4 text-[#8696a0] shrink-0" />
+                      <input
+                        ref={companyNameInputRef}
+                        type="text"
+                        placeholder="Ex: Prime Odonto, Imóveis Alpha"
+                        value={newCompanyName}
+                        onChange={(e) => {
+                          setNewCompanyName(e.target.value);
+                          if (registerError) setRegisterError(null);
+                        }}
+                        className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
+                          darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'
+                        }`}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-medium text-[#8696a0] mb-1 block">
+                      Segmento / Ramo <span className="text-[10px] opacity-75">(opcional)</span>
+                    </label>
+                    <div
+                      className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border transition-colors ${
+                        darkMode
+                          ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
+                          : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
+                      }`}
+                    >
+                      <Briefcase className="w-4 h-4 text-[#8696a0] shrink-0" />
+                      <input
+                        type="text"
+                        placeholder="Ex: Saúde, Imóveis, Comércio"
+                        value={newCompanySegment}
+                        onChange={(e) => setNewCompanySegment(e.target.value)}
+                        className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
+                          darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'
+                        }`}
+                      />
+                    </div>
                   </div>
                 </div>
+              )}
 
-                <div>
-                  <label className="text-xs font-medium text-[#8696a0] mb-1 block">
-                    Seu Nome (Gestor)
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Ex: Alex Belmonte"
-                    value={newAdminName}
-                    onChange={(e) => setNewAdminName(e.target.value)}
-                    className={`w-full px-3.5 py-2 rounded-xl border text-sm focus:outline-none placeholder:text-[#8696a0] ${
-                      darkMode
-                        ? 'bg-[#111b21] border-[#313d45] focus:border-[#00a884]'
-                        : 'bg-[#f7f9fa] border-[#d1d7db] focus:border-[#00a884]'
-                    }`}
-                  />
-                </div>
-              </div>
-
-              {/* WhatsApp Comercial da Empresa com Seletor de País */}
-              <div>
-                <label className="text-xs font-medium text-[#8696a0] mb-1 block">
-                  WhatsApp Comercial da Empresa
-                </label>
-                <div
-                  className={`flex items-center gap-2 px-3 py-2 rounded-xl border transition-colors ${
-                    darkMode
-                      ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
-                      : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
-                  }`}
-                >
-                  {/* Seletor de País com Bandeira e DDI */}
-                  <div className="flex items-center gap-1 shrink-0 pr-2 border-r border-[#313d45]/40">
-                    <span className="text-sm select-none leading-none">{selectedCountry.flag}</span>
-                    <select
-                      value={selectedCountry.code}
-                      onChange={(e) => {
-                        const found = COUNTRY_OPTIONS.find((c) => c.code === e.target.value);
-                        if (found) {
-                          setSelectedCountry(found);
-                          setNewWhatsappPhone('');
-                        }
-                      }}
-                      className={`bg-transparent text-xs font-semibold focus:outline-none cursor-pointer pr-1 py-0.5 ${
-                        darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'
+              {/* ETAPA 2 — Seus dados */}
+              {registerStep === 2 && (
+                <div className="space-y-2.5 animate-in fade-in duration-150">
+                  <div>
+                    <label className="text-xs font-medium text-[#8696a0] mb-1 block">
+                      Seu Nome (Gestor)
+                    </label>
+                    <div
+                      className={`flex items-center gap-2.5 px-3.5 py-2 rounded-xl border transition-colors ${
+                        darkMode
+                          ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
+                          : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
                       }`}
-                      aria-label="Código DDI do País"
                     >
-                      {COUNTRY_OPTIONS.map((c) => (
-                        <option
-                          key={c.code}
-                          value={c.code}
-                          className={darkMode ? 'bg-[#202c33] text-[#e9edef]' : 'bg-white text-[#111b21]'}
+                      <User className="w-4 h-4 text-[#8696a0] shrink-0" />
+                      <input
+                        ref={adminNameInputRef}
+                        type="text"
+                        placeholder="Ex: Alex Belmonte"
+                        value={newAdminName}
+                        onChange={(e) => {
+                          setNewAdminName(e.target.value);
+                          if (registerError) setRegisterError(null);
+                        }}
+                        className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
+                          darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'
+                        }`}
+                      />
+                    </div>
+                  </div>
+
+                  {/* WhatsApp Comercial da Empresa com Seletor de País */}
+                  <div>
+                    <label className="text-xs font-medium text-[#8696a0] mb-1 block">
+                      WhatsApp Comercial da Empresa
+                    </label>
+                    <div
+                      className={`flex items-center gap-2 px-3 py-2 rounded-xl border transition-colors ${
+                        darkMode
+                          ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
+                          : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
+                      }`}
+                    >
+                      {/* Seletor de País com Bandeira e DDI */}
+                      <div className="flex items-center gap-1 shrink-0 pr-2 border-r border-[#313d45]/40">
+                        <span className="text-sm select-none leading-none">{selectedCountry.flag}</span>
+                        <select
+                          value={selectedCountry.code}
+                          onChange={(e) => {
+                            const found = COUNTRY_OPTIONS.find((c) => c.code === e.target.value);
+                            if (found) {
+                              setSelectedCountry(found);
+                              setNewWhatsappPhone('');
+                            }
+                          }}
+                          className={`bg-transparent text-xs font-semibold focus:outline-none cursor-pointer pr-1 py-0.5 ${
+                            darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'
+                          }`}
+                          aria-label="Código DDI do País"
                         >
-                          {c.flag} {c.ddi} ({c.name})
-                        </option>
-                      ))}
-                    </select>
+                          {COUNTRY_OPTIONS.map((c) => (
+                            <option
+                              key={c.code}
+                              value={c.code}
+                              className={darkMode ? 'bg-[#202c33] text-[#e9edef]' : 'bg-white text-[#111b21]'}
+                            >
+                              {c.flag} {c.ddi} ({c.name})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <input
+                        type="tel"
+                        placeholder={selectedCountry.placeholder}
+                        value={newWhatsappPhone}
+                        onChange={(e) => {
+                          setNewWhatsappPhone(formatPhone(e.target.value, selectedCountry.code));
+                          if (registerError) setRegisterError(null);
+                        }}
+                        className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
+                          darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'
+                        }`}
+                      />
+                    </div>
+                    <p className="text-[10px] text-[#8696a0] mt-0.5 pl-1">
+                      Exemplo ({selectedCountry.name}): <span className="font-mono">{selectedCountry.ddi} {selectedCountry.placeholder}</span>
+                    </p>
                   </div>
 
-                  <input
-                    type="tel"
-                    required
-                    placeholder={selectedCountry.placeholder}
-                    value={newWhatsappPhone}
-                    onChange={(e) => {
-                      setNewWhatsappPhone(formatPhone(e.target.value, selectedCountry.code));
-                      if (registerError) setRegisterError(null);
-                    }}
-                    className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
-                      darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'
-                    }`}
-                  />
+                  <div>
+                    <label className="text-xs font-medium text-[#8696a0] mb-1 block">
+                      E-mail Corporativo
+                    </label>
+                    <div
+                      className={`flex items-center gap-2.5 px-3.5 py-2 rounded-xl border transition-colors ${
+                        darkMode
+                          ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
+                          : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
+                      }`}
+                    >
+                      <Mail className="w-4 h-4 text-[#8696a0] shrink-0" />
+                      <input
+                        type="email"
+                        autoComplete="email"
+                        placeholder="admin@suaempresa.com.br"
+                        value={newEmail}
+                        onChange={(e) => {
+                          setNewEmail(e.target.value);
+                          if (registerError) setRegisterError(null);
+                        }}
+                        style={{ colorScheme: darkMode ? 'dark' : 'light' }}
+                        className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
+                          darkMode ? 'login-autofill-dark text-[#e9edef]' : 'login-autofill-light text-[#111b21]'
+                        }`}
+                      />
+                    </div>
+                  </div>
                 </div>
-                <p className="text-[10px] text-[#8696a0] mt-1 pl-1">
-                  Exemplo ({selectedCountry.name}): <span className="font-mono">{selectedCountry.ddi} {selectedCountry.placeholder}</span>
-                </p>
-              </div>
+              )}
 
-              <div>
-                <label className="text-xs font-medium text-[#8696a0] mb-1 block">
-                  E-mail Corporativo
-                </label>
-                <div
-                  className={`flex items-center gap-2.5 px-3.5 py-2 rounded-xl border transition-colors ${
-                    darkMode
-                      ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
-                      : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
-                  }`}
-                >
-                  <Mail className="w-4 h-4 text-[#8696a0] shrink-0" />
-                  <input
-                    type="email"
-                    required
-                    autoComplete="email"
-                    placeholder="admin@suaempresa.com.br"
-                    value={newEmail}
-                    onChange={(e) => {
-                      setNewEmail(e.target.value);
-                      if (registerError) setRegisterError(null);
-                    }}
-                    style={{ colorScheme: darkMode ? 'dark' : 'light' }}
-                    className={`w-full bg-transparent text-sm focus:outline-none placeholder:text-[#8696a0] ${
-                      darkMode ? 'login-autofill-dark text-[#e9edef]' : 'login-autofill-light text-[#111b21]'
-                    }`}
-                  />
+              {/* ETAPA 3 — Acesso */}
+              {registerStep === 3 && (
+                <div className="space-y-3 animate-in fade-in duration-150">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="text-xs font-medium text-[#8696a0] mb-1 block">
+                        Criar Senha
+                      </label>
+                      <div
+                        className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border transition-colors ${
+                          darkMode
+                            ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
+                            : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
+                        }`}
+                      >
+                        <Lock className="w-4 h-4 text-[#8696a0] shrink-0" />
+                        <input
+                          ref={passwordInputRef}
+                          type={showNewPassword ? 'text' : 'password'}
+                          autoComplete="new-password"
+                          placeholder="Mín. 6 dígitos"
+                          value={newPassword}
+                          onChange={(e) => {
+                            setNewPassword(e.target.value);
+                            if (registerError) setRegisterError(null);
+                          }}
+                          style={{ colorScheme: darkMode ? 'dark' : 'light' }}
+                          className={`w-full bg-transparent text-xs focus:outline-none placeholder:text-[#8696a0] ${
+                            darkMode ? 'login-autofill-dark text-[#e9edef]' : 'login-autofill-light text-[#111b21]'
+                          }`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowNewPassword(!showNewPassword)}
+                          className="text-[#8696a0] hover:text-[#e9edef] p-0.5 cursor-pointer"
+                        >
+                          {showNewPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-medium text-[#8696a0] mb-1 block">
+                        Confirmar Senha
+                      </label>
+                      <div
+                        className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border transition-colors ${
+                          darkMode
+                            ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
+                            : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
+                        }`}
+                      >
+                        <Lock className="w-4 h-4 text-[#8696a0] shrink-0" />
+                        <input
+                          type={showNewConfirmPassword ? 'text' : 'password'}
+                          autoComplete="new-password"
+                          placeholder="Repita a senha"
+                          value={newConfirmPassword}
+                          onChange={(e) => {
+                            setNewConfirmPassword(e.target.value);
+                            if (registerError) setRegisterError(null);
+                          }}
+                          style={{ colorScheme: darkMode ? 'dark' : 'light' }}
+                          className={`w-full bg-transparent text-xs focus:outline-none placeholder:text-[#8696a0] ${
+                            darkMode ? 'login-autofill-dark text-[#e9edef]' : 'login-autofill-light text-[#111b21]'
+                          }`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowNewConfirmPassword(!showNewConfirmPassword)}
+                          className="text-[#8696a0] hover:text-[#e9edef] p-0.5 cursor-pointer"
+                        >
+                          {showNewConfirmPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-[#8696a0] leading-relaxed">
+                    Sua senha é protegida com criptografia avançada para acesso seguro e sincronização multi-dispositivo.
+                  </p>
                 </div>
-              </div>
+              )}
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="text-xs font-medium text-[#8696a0] mb-1 block">
-                    Criar Senha
-                  </label>
-                  <div
-                    className={`flex items-center gap-2 px-3 py-2 rounded-xl border transition-colors ${
+              {/* Ações de Navegação e Envio */}
+              <div className="flex items-center gap-2.5 pt-1">
+                {registerStep > 1 && (
+                  <button
+                    type="button"
+                    disabled={isLoading}
+                    onClick={handlePrevStep}
+                    className={`px-4 py-2.5 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 ${
                       darkMode
-                        ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
-                        : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
+                        ? 'border-[#313d45] bg-[#111b21] hover:bg-[#2a3942] text-[#d1d7db]'
+                        : 'border-[#d1d7db] bg-[#f7f9fa] hover:bg-gray-200 text-[#111b21]'
                     }`}
                   >
-                    <Lock className="w-4 h-4 text-[#8696a0] shrink-0" />
-                    <input
-                      type={showNewPassword ? 'text' : 'password'}
-                      required
-                      autoComplete="new-password"
-                      placeholder="Mín. 6 dígitos"
-                      value={newPassword}
-                      onChange={(e) => {
-                        setNewPassword(e.target.value);
-                        if (registerError) setRegisterError(null);
-                      }}
-                      style={{ colorScheme: darkMode ? 'dark' : 'light' }}
-                      className={`w-full bg-transparent text-xs focus:outline-none placeholder:text-[#8696a0] ${
-                        darkMode ? 'login-autofill-dark text-[#e9edef]' : 'login-autofill-light text-[#111b21]'
-                      }`}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowNewPassword(!showNewPassword)}
-                      className="text-[#8696a0] hover:text-[#e9edef] p-0.5"
-                    >
-                      {showNewPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </button>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-xs font-medium text-[#8696a0] mb-1 block">
-                    Confirmar Senha
-                  </label>
-                  <div
-                    className={`flex items-center gap-2 px-3 py-2 rounded-xl border transition-colors ${
-                      darkMode
-                        ? 'bg-[#111b21] border-[#313d45] focus-within:border-[#00a884]'
-                        : 'bg-[#f7f9fa] border-[#d1d7db] focus-within:border-[#00a884]'
-                    }`}
-                  >
-                    <Lock className="w-4 h-4 text-[#8696a0] shrink-0" />
-                    <input
-                      type={showNewConfirmPassword ? 'text' : 'password'}
-                      required
-                      autoComplete="new-password"
-                      placeholder="Repita a senha"
-                      value={newConfirmPassword}
-                      onChange={(e) => {
-                        setNewConfirmPassword(e.target.value);
-                        if (registerError) setRegisterError(null);
-                      }}
-                      style={{ colorScheme: darkMode ? 'dark' : 'light' }}
-                      className={`w-full bg-transparent text-xs focus:outline-none placeholder:text-[#8696a0] ${
-                        darkMode ? 'login-autofill-dark text-[#e9edef]' : 'login-autofill-light text-[#111b21]'
-                      }`}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowNewConfirmPassword(!showNewConfirmPassword)}
-                      className="text-[#8696a0] hover:text-[#e9edef] p-0.5"
-                    >
-                      {showNewConfirmPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <p className="text-[11px] text-[#8696a0] pt-0.5">
-                Sua senha é protegida com criptografia avançada para acesso seguro e sincronização multi-dispositivo.
-              </p>
-
-              {/* Resumo compacto do Período de Avaliação Gratuita */}
-              <div
-                id="register-trial-summary"
-                className={`p-3 rounded-xl border text-[11px] leading-relaxed space-y-1.5 ${
-                  darkMode
-                    ? 'bg-[#111b21]/80 border-[#00a884]/30 text-[#d1d7db]'
-                    : 'bg-emerald-50/70 border-emerald-200 text-[#111b21]'
-                }`}
-              >
-                <div className="flex items-center gap-1.5 font-semibold text-[#00a884]">
-                  <Sparkles className="w-3.5 h-3.5 shrink-0" />
-                  <span>Avaliação gratuita de 7 dias incluída no cadastro</span>
-                </div>
-                <ul className={`space-y-1 pl-1 ${darkMode ? 'text-[#aebac1]' : 'text-[#3b4a54]'}`}>
-                  <li>• <strong>7 dias gratuitos</strong> e <strong>1 canal ativo por vez</strong> (com substituição permitida).</li>
-                  <li>• <strong>500 respostas da IA</strong> incluídas durante a avaliação.</li>
-                  <li>• <strong>Atendimento humano mantido</strong> se a franquia da IA terminar antes dos 7 dias.</li>
-                  <li>• Após os 7 dias, será necessário <strong>contratar um plano</strong> para continuar enviando mensagens; seu <strong>histórico e configurações ficam preservados</strong>.</li>
-                </ul>
-              </div>
-
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="w-full mt-2 py-3 rounded-xl bg-[#00a884] hover:bg-[#009374] active:scale-[0.99] text-white font-semibold text-sm transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
-              >
-                {isLoading ? (
-                  <span className="flex items-center gap-2">
-                    <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                    Criando workspace...
-                  </span>
-                ) : (
-                  <>
-                    <Sparkles className="w-4 h-4" />
-                    Cadastrar Empresa
-                  </>
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Voltar</span>
+                  </button>
                 )}
-              </button>
+
+                {registerStep < 3 ? (
+                  <button
+                    type="button"
+                    onClick={handleNextStep}
+                    className="flex-1 py-2.5 px-4 rounded-xl bg-[#00a884] hover:bg-[#009374] active:scale-[0.99] text-white font-semibold text-sm transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <span>Continuar</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={isLoading}
+                    className="flex-1 py-2.5 px-4 rounded-xl bg-[#00a884] hover:bg-[#009374] active:scale-[0.99] text-white font-semibold text-sm transition-all shadow-md flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                  >
+                    {isLoading ? (
+                      <span className="flex items-center gap-2">
+                        <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+                        Criando conta...
+                      </span>
+                    ) : (
+                      <>
+                        <Sparkles className="w-4 h-4" />
+                        <span>Criar minha conta grátis</span>
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
             </form>
           )}
         </div>
       </div>
 
       {/* Footer com Links e Créditos */}
-      <footer className="py-5 text-center text-xs text-[#8696a0] shrink-0 border-t border-[#313d45]/40 flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-4 px-4">
+      <footer className="py-3.5 text-center text-xs text-[#8696a0] shrink-0 border-t border-[#313d45]/40 flex flex-col sm:flex-row items-center justify-center gap-1.5 sm:gap-4 px-4">
         <button
           type="button"
           onClick={() => setIsPrivacyModalOpen(true)}
