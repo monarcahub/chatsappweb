@@ -794,7 +794,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ darkMode = true }) => 
                       <input
                         ref={adminNameInputRef}
                         type="text"
-                        placeholder="Ex: Alex Belmonte"
+                        placeholder="Ex: João Silva"
                         value={newAdminName}
                         onChange={(e) => {
                           setNewAdminName(e.target.value);
