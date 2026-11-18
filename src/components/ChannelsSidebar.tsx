@@ -29,6 +29,7 @@ import {
   MapPin,
   Phone,
   Bot,
+  Search,
 } from 'lucide-react';
 import { ChannelType, Account, AccountSubscriptionStatus } from '../types';
 import { useAuth } from '../context/AuthContext';
@@ -171,6 +172,38 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
   // Múltiplas Unidades / Filiais (cerebro_ia.branches)
   const [availableBranches, setAvailableBranches] = useState<BranchItem[]>([]);
   const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
+
+  // Pesquisa em tempo real e controle de expansão da lista compacta de canais
+  const [channelSearchTerm, setChannelSearchTerm] = useState('');
+  const [expandedChannelIds, setExpandedChannelIds] = useState<Record<string, boolean>>({});
+
+  const toggleChannelExpanded = (channelId: string) => {
+    setExpandedChannelIds((prev) => ({
+      ...prev,
+      [channelId]: !prev[channelId],
+    }));
+  };
+
+  const filteredChannels = useMemo(() => {
+    const query = channelSearchTerm.trim().toLowerCase();
+    if (!query) return channels;
+
+    return channels.filter((channel) => {
+      const linkedBranch = availableBranches.find((b) => b.channel_id === channel.id);
+      const statusLabel = channel.status === 'online' ? 'online ativo conectado' : 'desconectado offline';
+      const aiLabel = channel.ai_enabled !== false ? 'ia ativa' : 'ia pausada';
+
+      return (
+        channel.name.toLowerCase().includes(query) ||
+        channel.identifier.toLowerCase().includes(query) ||
+        (channel.provider || '').toLowerCase().includes(query) ||
+        channel.type.toLowerCase().includes(query) ||
+        (linkedBranch?.name || '').toLowerCase().includes(query) ||
+        statusLabel.includes(query) ||
+        aiLabel.includes(query)
+      );
+    });
+  }, [channels, channelSearchTerm, availableBranches]);
 
   useEffect(() => {
     if (!successToast) return;
@@ -1062,31 +1095,34 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
     }
   };
 
-  const getChannelIcon = (type: ChannelType) => {
+  const getChannelIcon = (type: ChannelType, size: 'sm' | 'md' = 'md') => {
+    const boxClass = size === 'sm' ? 'w-7 h-7' : 'w-10 h-10';
+    const iconClass = size === 'sm' ? 'w-3.5 h-3.5' : 'w-5 h-5';
+
     switch (type) {
       case 'whatsapp':
         return (
-          <div className="w-10 h-10 rounded-full bg-[#25d366] text-white flex items-center justify-center shrink-0 shadow-sm">
-            <MessageSquare className="w-5 h-5 fill-current" />
+          <div className={`${boxClass} rounded-full bg-[#25d366] text-white flex items-center justify-center shrink-0 shadow-sm`}>
+            <MessageSquare className={`${iconClass} fill-current`} />
           </div>
         );
       case 'instagram':
         return (
-          <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-[#f09433] via-[#e6683c] to-[#bc1888] text-white flex items-center justify-center shrink-0 shadow-sm">
-            <Instagram className="w-5 h-5" />
+          <div className={`${boxClass} rounded-full bg-gradient-to-tr from-[#f09433] via-[#e6683c] to-[#bc1888] text-white flex items-center justify-center shrink-0 shadow-sm`}>
+            <Instagram className={iconClass} />
           </div>
         );
       case 'telegram':
         return (
-          <div className="w-10 h-10 rounded-full bg-[#0088cc] text-white flex items-center justify-center shrink-0 shadow-sm">
-            <TelegramIcon className="w-5 h-5" />
+          <div className={`${boxClass} rounded-full bg-[#0088cc] text-white flex items-center justify-center shrink-0 shadow-sm`}>
+            <TelegramIcon className={iconClass} />
           </div>
         );
       case 'webchat':
       default:
         return (
-          <div className="w-10 h-10 rounded-full bg-[#00a884] text-white flex items-center justify-center shrink-0 shadow-sm">
-            <Globe className="w-5 h-5" />
+          <div className={`${boxClass} rounded-full bg-[#00a884] text-white flex items-center justify-center shrink-0 shadow-sm`}>
+            <Globe className={iconClass} />
           </div>
         );
     }
@@ -1277,14 +1313,94 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
           </div>
         )}
 
-        {/* List of Channels */}
-        <div className="space-y-2.5">
-          {channels.map((channel) => {
+        {/* Pesquisa e Filtro Automático de Canais */}
+        {channels.length > 0 && (
+          <div className="space-y-1.5">
+            <div
+              className={`flex items-center gap-2 px-3 py-2 rounded-xl border transition-colors ${
+                darkMode
+                  ? 'bg-[#202c33] border-[#2a3942] focus-within:border-[#00a884]'
+                  : 'bg-gray-50 border-gray-200 focus-within:border-[#00a884] focus-within:bg-white'
+              }`}
+            >
+              <Search className="w-4 h-4 text-[#8696a0] shrink-0" />
+              <input
+                type="text"
+                value={channelSearchTerm}
+                onChange={(e) => setChannelSearchTerm(e.target.value)}
+                placeholder="Pesquisar canal por nome, número ou status..."
+                aria-label="Pesquisar canal"
+                className={`w-full bg-transparent text-xs focus:outline-none ${
+                  darkMode ? 'text-[#e9edef] placeholder-[#8696a0]' : 'text-[#111b21] placeholder-gray-400'
+                }`}
+              />
+              {channelSearchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setChannelSearchTerm('')}
+                  className={`p-0.5 rounded-full transition-colors cursor-pointer shrink-0 ${
+                    darkMode ? 'text-[#8696a0] hover:text-white hover:bg-[#374248]' : 'text-gray-400 hover:text-gray-700 hover:bg-gray-200'
+                  }`}
+                  title="Limpar pesquisa"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+            {channelSearchTerm.trim() !== '' && (
+              <div className="flex items-center justify-between px-1 text-[11px] text-[#8696a0]">
+                <span>
+                  {filteredChannels.length === 0
+                    ? 'Nenhum canal correspondente'
+                    : `${filteredChannels.length} de ${channels.length} ${channels.length === 1 ? 'canal' : 'canais'}`}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setChannelSearchTerm('')}
+                  className="text-[#00a884] hover:underline font-medium cursor-pointer"
+                >
+                  Limpar filtro
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Empty Search State */}
+        {channels.length > 0 && filteredChannels.length === 0 && (
+          <div
+            className={`p-5 rounded-xl border text-center ${
+              darkMode ? 'bg-[#202c33] border-[#2a3942]' : 'bg-gray-50 border-gray-200'
+            }`}
+          >
+            <Search className="w-5 h-5 text-[#8696a0] mx-auto mb-2" />
+            <p className={`text-xs font-semibold mb-1 ${darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'}`}>
+              Nenhum canal encontrado
+            </p>
+            <p className="text-[11px] text-[#8696a0] mb-3">
+              Não há canais correspondentes a &ldquo;{channelSearchTerm}&rdquo;.
+            </p>
+            <button
+              type="button"
+              onClick={() => setChannelSearchTerm('')}
+              className="px-3 py-1 rounded-lg bg-[#00a884]/15 hover:bg-[#00a884]/25 text-[#00a884] text-[11px] font-semibold cursor-pointer transition-colors"
+            >
+              Limpar pesquisa
+            </button>
+          </div>
+        )}
+
+        {/* Compact Expandable List of Channels */}
+        <div className="space-y-1.5">
+          {filteredChannels.map((channel) => {
             const isSelected = currentChannelFilter === channel.id || currentChannelFilter === channel.type;
+            const isExpanded = Boolean(expandedChannelIds[channel.id]);
+            const linkedBranch = availableBranches.find((b) => b.channel_id === channel.id);
+
             return (
               <div
                 key={channel.id}
-                className={`p-3 rounded-xl border transition-all ${
+                className={`rounded-xl border transition-all overflow-hidden ${
                   isSelected
                     ? 'border-[#00a884] bg-[#00a884]/10 shadow-sm'
                     : darkMode
@@ -1292,54 +1408,85 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                     : 'bg-gray-50 border-gray-200 hover:border-gray-300'
                 }`}
               >
-                <div className="flex items-start gap-3">
-                  {getChannelIcon(channel.type)}
+                {/* Linha compacta: ícone, nome do canal, status ao lado e seta de expandir/recolher */}
+                <button
+                  type="button"
+                  onClick={() => toggleChannelExpanded(channel.id)}
+                  aria-expanded={isExpanded}
+                  className={`w-full px-3 py-2.5 flex items-center justify-between gap-2 text-left transition-colors cursor-pointer ${
+                    darkMode ? 'hover:bg-[#2a3942]/60' : 'hover:bg-gray-100/80'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                    {getChannelIcon(channel.type, 'sm')}
 
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-1 mb-0.5">
-                      <div className="flex items-center gap-1.5 min-w-0 flex-1 mr-1">
-                        <h3 className={`font-bold text-xs truncate ${darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'}`} title={channel.name}>
-                          {channel.name}
-                        </h3>
-                        <button
-                          type="button"
-                          onClick={() => handleOpenEditChannelModal(channel)}
-                          className="p-1 rounded text-[#8696a0] hover:text-[#00a884] hover:bg-[#00a884]/10 transition-colors cursor-pointer shrink-0"
-                          title="Editar nome do canal no Supabase"
-                        >
-                          <Pencil className="w-3 h-3" />
-                        </button>
-                      </div>
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 shrink-0 ${
-                        channel.status === 'online'
-                          ? 'bg-[#064e3b] text-[#34d399] border border-[#34d399]/30'
-                          : 'bg-gray-800 text-gray-400 border border-gray-700'
-                      }`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${channel.status === 'online' ? 'bg-[#34d399] animate-pulse' : 'bg-gray-500'}`} />
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <h3
+                        className={`font-semibold text-xs truncate ${
+                          darkMode ? 'text-[#e9edef]' : 'text-[#111b21]'
+                        }`}
+                        title={channel.name}
+                      >
+                        {channel.name}
+                      </h3>
+
+                      <span
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 shrink-0 ${
+                          channel.status === 'online'
+                            ? 'bg-[#064e3b] text-[#34d399] border border-[#34d399]/30'
+                            : darkMode
+                            ? 'bg-gray-800 text-gray-400 border border-gray-700'
+                            : 'bg-gray-200 text-gray-600 border border-gray-300'
+                        }`}
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full ${
+                            channel.status === 'online' ? 'bg-[#34d399] animate-pulse' : 'bg-gray-500'
+                          }`}
+                        />
                         {channel.status === 'online' ? 'Online' : 'Desconectado'}
                       </span>
                     </div>
+                  </div>
 
+                  <span
+                    className={`p-1 rounded-md shrink-0 transition-colors ${
+                      darkMode ? 'text-[#aebac1]' : 'text-[#54656f]'
+                    }`}
+                    title={isExpanded ? 'Ocultar detalhes' : 'Expandir detalhes e configurações'}
+                  >
+                    {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                  </span>
+                </button>
+
+                {/* Detalhes e configurações do canal (exibidos ao expandir) */}
+                {isExpanded && (
+                  <div
+                    className={`px-3 pb-3 pt-2.5 border-t ${
+                      darkMode ? 'border-[#2a3942]' : 'border-gray-200'
+                    }`}
+                  >
                     <div className="text-xs font-mono font-semibold text-[#00a884] flex items-center justify-between gap-1 flex-wrap">
                       <span>{channel.identifier}</span>
-                      {(() => {
-                        const linkedBranch = availableBranches.find((b) => b.channel_id === channel.id);
-                        if (!linkedBranch) return null;
-                        return (
-                          <span
-                            className="inline-flex items-center gap-1 text-[10px] font-semibold text-purple-300 bg-purple-500/15 border border-purple-500/30 px-2 py-0.5 rounded-md"
-                            title={`Unidade vinculada: ${linkedBranch.name}`}
-                          >
-                            <Building2 className="w-3 h-3" />
-                            <span>Unidade: {linkedBranch.name}</span>
-                          </span>
-                        );
-                      })()}
+                      {linkedBranch && (
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] font-semibold text-purple-300 bg-purple-500/15 border border-purple-500/30 px-2 py-0.5 rounded-md"
+                          title={`Unidade vinculada: ${linkedBranch.name}`}
+                        >
+                          <Building2 className="w-3 h-3" />
+                          <span>Unidade: {linkedBranch.name}</span>
+                        </span>
+                      )}
                     </div>
 
                     <div className="mt-1 text-[11px] text-[#8696a0] flex flex-wrap items-center justify-between gap-1">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span>Provedor: <strong className={darkMode ? 'text-gray-300' : 'text-gray-700'}>{channel.provider?.toLowerCase().includes('evolution') ? 'Api Padrão' : channel.provider}</strong></span>
+                        <span>
+                          Provedor:{' '}
+                          <strong className={darkMode ? 'text-gray-300' : 'text-gray-700'}>
+                            {channel.provider?.toLowerCase().includes('evolution') ? 'Api Padrão' : channel.provider}
+                          </strong>
+                        </span>
                         {channel.type === 'whatsapp' && channel.apiType === 'meta_official' && (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#1877F2]/15 text-[#1877F2] border border-[#1877F2]/30 shadow-xs">
                             <ShieldCheck className="w-3 h-3" /> Mais Segura
@@ -1515,9 +1662,8 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                         Filtrar Conversas
                       </button>
                     </div>
-
                   </div>
-                </div>
+                )}
               </div>
             );
           })}

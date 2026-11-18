@@ -1418,7 +1418,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           }`}
                         >
                           {isOutgoing && (
-                            <CheckCheck className="w-3.5 h-3.5 text-[#53bdeb] inline shrink-0" />
+                            conv.lastMessage?.status === 'read' ? (
+                              <CheckCheck className="w-3.5 h-3.5 text-[#53bdeb] inline shrink-0" />
+                            ) : conv.lastMessage?.status === 'delivered' ? (
+                              <CheckCheck className="w-3.5 h-3.5 text-[#8696a0] inline shrink-0" />
+                            ) : (
+                              <Check className="w-3.5 h-3.5 text-[#8696a0] inline shrink-0" />
+                            )
                           )}
 
                           {isAudio ? (

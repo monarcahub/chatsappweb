@@ -640,15 +640,603 @@ app.get('/api/messages', async (req, res) => {
 });
 
 // =========================================================================
-// ROTA DO WEBHOOK DE ENTRADA (WHATSAPP CLOUD API / N8N -> CHATSAPP)
-// Recebe mensagens recebidas de clientes e grava no Supabase com disparo em Realtime
+// HELPERS DE SINCRONIZAÇÃO DE STATUS E COEXISTÊNCIA (EVOLUTION / META / N8N)
 // =========================================================================
-app.post(['/api/messages/incoming', '/api/webhooks/incoming'], async (req, res) => {
+type StandardMessageStatus = 'sent' | 'delivered' | 'read';
+
+function normalizeWebhookStatus(
+  rawStatus: unknown,
+  isFromMe: boolean,
+  isViewed: boolean = false
+): StandardMessageStatus {
+  if (isViewed) return 'read';
+  const normalized = String(rawStatus ?? '').toLowerCase().trim();
+  if (
+    normalized === 'read' ||
+    normalized === 'played' ||
+    normalized === 'seen' ||
+    normalized === 'viewed' ||
+    normalized === '3' ||
+    normalized === '4' ||
+    normalized === '5'
+  ) {
+    return 'read';
+  }
+  if (
+    normalized === 'delivered' ||
+    normalized === 'delivery_ack' ||
+    normalized === '2'
+  ) {
+    return 'delivered';
+  }
+  if (
+    normalized === 'sent' ||
+    normalized === 'server_ack' ||
+    normalized === 'pending' ||
+    normalized === '1' ||
+    normalized === '0'
+  ) {
+    return 'sent';
+  }
+  return isFromMe ? 'sent' : 'delivered';
+}
+
+function shouldUpgradeMessageStatus(
+  currentStatus: unknown,
+  nextStatus: StandardMessageStatus
+): boolean {
+  const rank: Record<string, number> = {
+    pending: 0,
+    sent: 1,
+    delivered: 2,
+    read: 3,
+  };
+  const currRank = rank[String(currentStatus || '').toLowerCase()] ?? 0;
+  const nextRank = rank[nextStatus] ?? 1;
+  return nextRank >= currRank;
+}
+
+function normalizePhoneDigits(raw: string): string {
+  return String(raw || '').split('@')[0].replace(/\D/g, '');
+}
+
+async function resolveOrCreateConversationForWebhook(params: {
+  conversationId?: string;
+  phone: string;
+  contactName: string;
+  accountId?: string | null;
+  channelId?: string | null;
+  isFromMe: boolean;
+  senderType: string;
+  lastMessageText: string;
+  nowIso: string;
+}): Promise<{ conversationId: string; accountId: string | null; currentUnreadCount: number; currentStatus: string; created: boolean } | null> {
+  if (!supabaseAdmin) return null;
+
+  if (params.conversationId) {
+    const { data: convById } = await supabaseAdmin
+      .from('conversations')
+      .select('id, account_id, unread_count, status')
+      .eq('id', params.conversationId)
+      .maybeSingle();
+
+    if (convById) {
+      return {
+        conversationId: convById.id,
+        accountId: convById.account_id || params.accountId || null,
+        currentUnreadCount: Number(convById.unread_count || 0),
+        currentStatus: convById.status || 'ai',
+        created: false,
+      };
+    }
+  }
+
+  const digits = normalizePhoneDigits(params.phone);
+  if (!digits) return null;
+
+  // 1. Tenta localizar o contato pelo telefone na tabela contacts
+  let contactsQuery = supabaseAdmin.from('contacts').select('id, account_id, phone');
+  if (params.accountId) {
+    contactsQuery = contactsQuery.eq('account_id', params.accountId);
+  }
+  const { data: candidateContacts } = await contactsQuery.limit(500);
+
+  const matchedContact = (candidateContacts || []).find((c: any) => {
+    const cDigits = normalizePhoneDigits(c.phone || '');
+    return (
+      cDigits &&
+      (cDigits === digits ||
+        (digits.length >= 8 && cDigits.endsWith(digits.slice(-8))) ||
+        (cDigits.length >= 8 && digits.endsWith(cDigits.slice(-8))))
+    );
+  });
+
+  if (matchedContact) {
+    let convQuery = supabaseAdmin
+      .from('conversations')
+      .select('id, account_id, unread_count, status')
+      .eq('contact_id', matchedContact.id)
+      .order('last_message_at', { ascending: false })
+      .limit(1);
+
+    if (params.channelId) {
+      convQuery = convQuery.eq('channel_id', params.channelId);
+    }
+
+    const { data: existingConvList } = await convQuery;
+    const existingConv = existingConvList?.[0];
+    if (existingConv) {
+      return {
+        conversationId: existingConv.id,
+        accountId: existingConv.account_id || matchedContact.account_id || params.accountId || null,
+        currentUnreadCount: Number(existingConv.unread_count || 0),
+        currentStatus: existingConv.status || 'ai',
+        created: false,
+      };
+    }
+  }
+
+  // 2. Descobre account_id e channel_id válidos caso não tenham sido enviados
+  let targetAccountId = params.accountId || matchedContact?.account_id || null;
+  let targetChannelId = params.channelId || null;
+
+  if (!targetChannelId) {
+    let chQuery = supabaseAdmin
+      .from('channels')
+      .select('id, account_id')
+      .eq('type', 'whatsapp')
+      .limit(1);
+    if (targetAccountId) {
+      chQuery = chQuery.eq('account_id', targetAccountId);
+    }
+    const { data: chList } = await chQuery;
+    if (chList?.[0]) {
+      targetChannelId = chList[0].id;
+      if (!targetAccountId) targetAccountId = chList[0].account_id;
+    }
+  }
+
+  if (!targetAccountId || !targetChannelId) {
+    return null;
+  }
+
+  let targetContactId = matchedContact?.id || null;
+  if (!targetContactId) {
+    const { data: newContact, error: contactErr } = await supabaseAdmin
+      .from('contacts')
+      .insert({
+        account_id: targetAccountId,
+        name: params.contactName || params.phone,
+        phone: params.phone,
+      })
+      .select('id')
+      .single();
+
+    if (contactErr || !newContact) return null;
+    targetContactId = newContact.id;
+  }
+
+  const initialStatus =
+    params.isFromMe && params.senderType !== 'ai' && params.senderType !== 'bot'
+      ? 'human'
+      : 'ai';
+
+  const { data: newConv, error: convErr } = await supabaseAdmin
+    .from('conversations')
+    .insert({
+      account_id: targetAccountId,
+      contact_id: targetContactId,
+      channel_id: targetChannelId,
+      status: initialStatus,
+      crm_stage: 'novo_lead',
+      unread_count: params.isFromMe ? 0 : 1,
+      last_message_text: params.lastMessageText,
+      last_message_at: params.nowIso,
+    })
+    .select('id, account_id, unread_count, status')
+    .single();
+
+  if (convErr || !newConv) return null;
+
+  return {
+    conversationId: newConv.id,
+    accountId: newConv.account_id || targetAccountId,
+    currentUnreadCount: Number(newConv.unread_count || 0),
+    currentStatus: newConv.status || initialStatus,
+    created: true,
+  };
+}
+
+async function applyMessageStatusUpdate(params: {
+  externalMessageId?: string | null;
+  internalMessageId?: string | null;
+  conversationId?: string | null;
+  status: StandardMessageStatus;
+  isFromMe?: boolean;
+  clearUnreadOnRead?: boolean;
+}): Promise<{ updatedCount: number; conversationId: string | null }> {
+  if (!supabaseAdmin) return { updatedCount: 0, conversationId: params.conversationId || null };
+
+  const nowIso = new Date().toISOString();
+  const matchedRows: any[] = [];
+
+  if (params.internalMessageId) {
+    const { data } = await supabaseAdmin
+      .from('messages')
+      .select('id, conversation_id, status, sender_type, metadata')
+      .eq('id', params.internalMessageId)
+      .maybeSingle();
+    if (data) matchedRows.push(data);
+  }
+
+  if (matchedRows.length === 0 && params.externalMessageId) {
+    const extId = String(params.externalMessageId).trim();
+    const { data: byWamid } = await supabaseAdmin
+      .from('messages')
+      .select('id, conversation_id, status, sender_type, metadata')
+      .eq('metadata->>wamid', extId)
+      .limit(5);
+    if (byWamid && byWamid.length > 0) {
+      matchedRows.push(...byWamid);
+    } else {
+      const { data: byMetaId } = await supabaseAdmin
+        .from('messages')
+        .select('id, conversation_id, status, sender_type, metadata')
+        .eq('metadata->>metaMessageId', extId)
+        .limit(5);
+      if (byMetaId && byMetaId.length > 0) {
+        matchedRows.push(...byMetaId);
+      }
+    }
+  }
+
+  let updatedCount = 0;
+  let resolvedConvId = params.conversationId || null;
+
+  for (const row of matchedRows) {
+    resolvedConvId = resolvedConvId || row.conversation_id;
+    if (!shouldUpgradeMessageStatus(row.status, params.status)) {
+      continue;
+    }
+
+    const updatedMeta = {
+      ...(typeof row.metadata === 'object' && row.metadata !== null ? row.metadata : {}),
+      ...(params.status === 'delivered' ? { delivered_at: nowIso } : {}),
+      ...(params.status === 'read' ? { read_at: nowIso } : {}),
+    };
+
+    const { error: upErr } = await supabaseAdmin
+      .from('messages')
+      .update({
+        status: params.status,
+        metadata: updatedMeta,
+      })
+      .eq('id', row.id);
+
+    if (!upErr) {
+      updatedCount++;
+    }
+  }
+
+  if (
+    resolvedConvId &&
+    params.status === 'read' &&
+    (params.clearUnreadOnRead !== false || params.isFromMe)
+  ) {
+    await supabaseAdmin
+      .from('conversations')
+      .update({
+        unread_count: 0,
+        updated_at: nowIso,
+      })
+      .eq('id', resolvedConvId);
+  }
+
+  return { updatedCount, conversationId: resolvedConvId };
+}
+
+// =========================================================================
+// ROTA DO WEBHOOK DE ENTRADA (WHATSAPP CLOUD API / EVOLUTION API / N8N -> CHATSAPP)
+// Processa mensagens de clientes, mensagens enviadas pelo celular físico (fromMe / Coexistência),
+// sincronização de leitura e atualizações de status ('sent', 'delivered', 'read') em tempo real.
+// =========================================================================
+app.post(['/api/messages/incoming', '/api/webhooks/incoming', '/api/webhooks/status'], async (req, res) => {
   if (!supabaseAdmin) {
     return res.status(503).json({ error: 'Supabase admin não configurado' });
   }
 
   try {
+    const body = req.body || {};
+    const nowIso = new Date().toISOString();
+
+    // -----------------------------------------------------------------------
+    // 1. EVENTOS DE STATUS DA META CLOUD API (value.statuses[])
+    // -----------------------------------------------------------------------
+    if (body.object === 'whatsapp_business_account') {
+      const change = body.entry?.[0]?.changes?.[0];
+      const field = String(change?.field || '');
+      const value = change?.value || {};
+
+      if (Array.isArray(value.statuses) && value.statuses.length > 0) {
+        const results = [];
+        for (const st of value.statuses) {
+          const normalized = normalizeWebhookStatus(st.status, true);
+          const convLookup = st.recipient_id
+            ? await resolveOrCreateConversationForWebhook({
+                phone: st.recipient_id,
+                contactName: st.recipient_id,
+                accountId: body.account_id || null,
+                channelId: body.channel_id || null,
+                isFromMe: true,
+                senderType: 'coexistence_mobile',
+                lastMessageText: '',
+                nowIso,
+              }).catch(() => null)
+            : null;
+
+          const updateRes = await applyMessageStatusUpdate({
+            externalMessageId: st.id,
+            conversationId: convLookup?.conversationId || body.conversation_id || null,
+            status: normalized,
+            isFromMe: true,
+            clearUnreadOnRead: true,
+          });
+          results.push({ id: st.id, status: normalized, ...updateRes });
+        }
+        return res.status(200).json({ success: true, event: 'meta_statuses', results });
+      }
+
+      // Coexistência Meta: smb_message_echoes / message_echoes (mensagens enviadas pelo app no celular)
+      const isMetaEcho =
+        field === 'smb_message_echoes' ||
+        field === 'message_echoes' ||
+        Array.isArray(value.message_echoes);
+
+      if (isMetaEcho || Array.isArray(value.messages)) {
+        const metaMsg = (isMetaEcho ? value.message_echoes?.[0] : value.messages?.[0]) || value.messages?.[0];
+        if (!metaMsg) {
+          return res.status(200).json({ success: true, ignored: true, reason: 'Payload Meta sem mensagem' });
+        }
+
+        const isFromMe = isMetaEcho || metaMsg.fromMe === true;
+        const contactInfo = value.contacts?.[0];
+        const rawPhone = isFromMe
+          ? metaMsg.to || contactInfo?.wa_id || body.contact_phone || body.phone || ''
+          : contactInfo?.wa_id || metaMsg.from || body.contact_phone || body.phone || '';
+        const rawName = contactInfo?.profile?.name || body.contact_name || body.sender_name || rawPhone || 'Cliente';
+
+        let parsedContent = '';
+        let parsedType = metaMsg.type || 'text';
+        let parsedMediaUrl: string | null = null;
+        if (metaMsg.type === 'text') parsedContent = metaMsg.text?.body || '';
+        else if (metaMsg.type === 'image') {
+          parsedContent = metaMsg.image?.caption || 'Foto';
+          parsedMediaUrl = metaMsg.image?.link || null;
+        } else if (metaMsg.type === 'audio') {
+          parsedContent = 'audio';
+          parsedMediaUrl = metaMsg.audio?.link || null;
+        } else if (metaMsg.type === 'document') {
+          parsedContent = metaMsg.document?.filename || 'Documento';
+          parsedMediaUrl = metaMsg.document?.link || null;
+        } else {
+          parsedContent = metaMsg.text?.body || body.content || body.text || `[${parsedType}]`;
+        }
+
+        const senderType = isFromMe ? 'coexistence_mobile' : 'contact';
+        const messageStatus = normalizeWebhookStatus(
+          metaMsg.status || body.status,
+          isFromMe,
+          Boolean(body.viewed || body.is_read || body.read === true)
+        );
+
+        const convInfo = await resolveOrCreateConversationForWebhook({
+          conversationId: body.conversation_id,
+          phone: rawPhone,
+          contactName: rawName,
+          accountId: body.account_id || null,
+          channelId: body.channel_id || null,
+          isFromMe,
+          senderType,
+          lastMessageText: parsedContent,
+          nowIso,
+        });
+
+        if (!convInfo) {
+          return res.status(400).json({ error: 'Não foi possível localizar ou criar a conversa para este contato' });
+        }
+
+        const wamid = metaMsg.id || body.meta_message_id || body.wamid || null;
+        if (wamid) {
+          const { data: existingByWamid } = await supabaseAdmin
+            .from('messages')
+            .select('*')
+            .eq('metadata->>wamid', wamid)
+            .maybeSingle();
+
+          if (existingByWamid) {
+            await applyMessageStatusUpdate({
+              internalMessageId: existingByWamid.id,
+              conversationId: convInfo.conversationId,
+              status: messageStatus,
+              isFromMe,
+              clearUnreadOnRead: true,
+            });
+            return res.status(200).json({
+              success: true,
+              deduplicated: true,
+              conversation_id: convInfo.conversationId,
+              message: existingByWamid,
+            });
+          }
+        }
+
+        const { data: insertedMsg, error: msgErr } = await supabaseAdmin
+          .from('messages')
+          .insert({
+            account_id: convInfo.accountId,
+            conversation_id: convInfo.conversationId,
+            sender_type: senderType,
+            sender_name: isFromMe ? 'Dispositivo Móvel' : rawName,
+            content: parsedContent,
+            content_type: parsedType,
+            media_url: parsedMediaUrl,
+            status: messageStatus,
+            created_at: nowIso,
+            metadata: {
+              channel: 'whatsapp',
+              wamid,
+              metaMessageId: wamid,
+              fromMe: isFromMe,
+              viaCoexistence: isFromMe,
+              source: isMetaEcho ? 'meta_smb_message_echoes' : 'meta_cloud_api',
+            },
+          })
+          .select('*')
+          .single();
+
+        if (msgErr) {
+          return res.status(400).json({ error: msgErr.message });
+        }
+
+        if (isFromMe) {
+          await supabaseAdmin
+            .from('messages')
+            .update({ status: 'read' })
+            .eq('conversation_id', convInfo.conversationId)
+            .in('sender_type', ['contact', 'customer'])
+            .neq('status', 'read');
+        }
+
+        await supabaseAdmin
+          .from('conversations')
+          .update({
+            last_message_text: parsedContent,
+            last_message_at: nowIso,
+            unread_count: isFromMe ? 0 : convInfo.currentUnreadCount + (convInfo.created ? 0 : 1),
+            ...(isFromMe ? { status: 'human' } : {}),
+            updated_at: nowIso,
+          })
+          .eq('id', convInfo.conversationId);
+
+        return res.status(201).json({
+          success: true,
+          conversation_id: convInfo.conversationId,
+          message: insertedMsg,
+        });
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // 2. EVENTOS EVOLUTION API: messages.update (ACK) & chats.update (LEITURA NO CELULAR)
+    // -----------------------------------------------------------------------
+    const evoEvent = String(body.event || '').toLowerCase().trim();
+    if (
+      evoEvent === 'messages.update' ||
+      body.type === 'status_update' ||
+      (body.status && (body.meta_message_id || body.wamid || body.message_id) && !body.content && !body.text && !body.message)
+    ) {
+      const updateData = Array.isArray(body.data) ? body.data[0] : body.data || body;
+      const rawSt =
+        updateData?.update?.status ??
+        updateData?.status ??
+        body.status;
+      const extMsgId =
+        updateData?.keyId ||
+        updateData?.key?.id ||
+        updateData?.id ||
+        body.meta_message_id ||
+        body.wamid ||
+        body.message_id;
+      const isFromMeUpdate = Boolean(
+        updateData?.fromMe ??
+          updateData?.key?.fromMe ??
+          body.fromMe ??
+          body.from_me
+      );
+      const nextStatus = normalizeWebhookStatus(rawSt, isFromMeUpdate);
+
+      let convId = body.conversation_id || null;
+      const remotePhone = updateData?.remoteJid || updateData?.key?.remoteJid || body.phone || body.contact_phone || '';
+      if (!convId && remotePhone) {
+        const convLookup = await resolveOrCreateConversationForWebhook({
+          phone: remotePhone,
+          contactName: remotePhone,
+          accountId: body.account_id || null,
+          channelId: body.channel_id || null,
+          isFromMe: true,
+          senderType: 'coexistence_mobile',
+          lastMessageText: '',
+          nowIso,
+        }).catch(() => null);
+        convId = convLookup?.conversationId || null;
+      }
+
+      const result = await applyMessageStatusUpdate({
+        externalMessageId: extMsgId,
+        internalMessageId: body.message_id && !String(body.message_id).startsWith('wamid') ? body.message_id : null,
+        conversationId: convId,
+        status: nextStatus,
+        isFromMe: isFromMeUpdate,
+        clearUnreadOnRead: true,
+      });
+
+      return res.status(200).json({
+        success: true,
+        event: 'status_update',
+        status: nextStatus,
+        ...result,
+      });
+    }
+
+    if (
+      evoEvent === 'chats.update' ||
+      evoEvent === 'chats.upsert' ||
+      body.action === 'mark_read' ||
+      body.mark_read === true
+    ) {
+      const chatData = Array.isArray(body.data) ? body.data[0] : body.data || body;
+      const unreadVal = chatData?.unreadCount ?? chatData?.unread_count ?? body.unread_count;
+      const chatPhone = chatData?.id || chatData?.remoteJid || body.phone || body.contact_phone || '';
+      if (unreadVal === 0 || body.action === 'mark_read' || body.mark_read === true) {
+        const convLookup = await resolveOrCreateConversationForWebhook({
+          conversationId: body.conversation_id,
+          phone: chatPhone,
+          contactName: chatPhone,
+          accountId: body.account_id || null,
+          channelId: body.channel_id || null,
+          isFromMe: true,
+          senderType: 'coexistence_mobile',
+          lastMessageText: '',
+          nowIso,
+        }).catch(() => null);
+
+        if (convLookup?.conversationId) {
+          await supabaseAdmin
+            .from('conversations')
+            .update({ unread_count: 0, updated_at: nowIso })
+            .eq('id', convLookup.conversationId);
+
+          await supabaseAdmin
+            .from('messages')
+            .update({ status: 'read' })
+            .eq('conversation_id', convLookup.conversationId)
+            .in('sender_type', ['contact', 'customer'])
+            .neq('status', 'read');
+
+          return res.status(200).json({
+            success: true,
+            event: 'chat_read_sync',
+            conversation_id: convLookup.conversationId,
+            unread_count: 0,
+          });
+        }
+      }
+      return res.status(200).json({ success: true, ignored: true, event: evoEvent });
+    }
+
+    // -----------------------------------------------------------------------
+    // 3. MENSAGEM NORMALIZADA (N8N / EVOLUTION API messages.upsert / COEXISTÊNCIA)
+    // -----------------------------------------------------------------------
     const {
       conversation_id,
       phone,
@@ -660,64 +1248,144 @@ app.post(['/api/messages/incoming', '/api/webhooks/incoming'], async (req, res) 
       content_type = 'text',
       media_url,
       account_id,
-    } = req.body;
+      channel_id,
+      sender_type: rawSenderType,
+      status: rawStatus,
+      fromMe,
+      from_me,
+      is_from_me,
+      wamid: rawWamid,
+      meta_message_id,
+      message_id,
+      viewed,
+      is_read,
+      read,
+    } = body;
 
-    const actualPhone = phone || contact_phone || '';
-    const actualName = contact_name || sender_name || 'Cliente';
-    const actualContent = content || text || '';
-    const actualContentType = content_type || 'text';
+    const evoKey = body.data?.key || body.key || {};
+    const evoMsg = body.data?.message || {};
 
-    let targetConvId = conversation_id;
+    const detectedFromMe = Boolean(
+      fromMe === true ||
+        from_me === true ||
+        is_from_me === true ||
+        evoKey?.fromMe === true ||
+        body.data?.fromMe === true ||
+        body.metadata?.fromMe === true ||
+        body.metadata?.viaCoexistence === true ||
+        ['coexistence_mobile', 'agent', 'ai', 'bot', 'mobile', 'device', 'celular'].includes(
+          String(rawSenderType || '').toLowerCase().trim()
+        )
+    );
 
-    // Se conversation_id não foi passado mas veio o telefone, busca ou cria a conversa
-    if (!targetConvId && actualPhone) {
-      const { data: existingConv } = await supabaseAdmin
-        .from('conversations')
-        .select('id, unread_count')
-        .eq('contact_phone', actualPhone)
-        .maybeSingle();
+    const normalizedRawSender = String(rawSenderType || '').toLowerCase().trim();
+    const resolvedSenderType = detectedFromMe
+      ? normalizedRawSender === 'ai' || normalizedRawSender === 'bot'
+        ? normalizedRawSender
+        : normalizedRawSender === 'agent'
+        ? 'agent'
+        : 'coexistence_mobile'
+      : 'contact';
 
-      if (existingConv) {
-        targetConvId = existingConv.id;
-      } else {
-        const { data: newConv, error: convErr } = await supabaseAdmin
-          .from('conversations')
-          .insert({
-            contact_name: actualName,
-            contact_phone: actualPhone,
-            channel: 'whatsapp',
-            status: 'ai',
-            unread_count: 1,
-            account_id: account_id || null,
-            last_message_text: actualContent,
-            last_message_at: new Date().toISOString(),
-          })
-          .select('id')
-          .single();
+    const actualPhone =
+      phone ||
+      contact_phone ||
+      (evoKey?.remoteJid ? String(evoKey.remoteJid).split('@')[0] : '') ||
+      body.sender ||
+      '';
+    const actualName =
+      contact_name ||
+      sender_name ||
+      body.data?.pushName ||
+      (detectedFromMe ? 'Dispositivo Móvel' : 'Cliente');
+    const actualContent =
+      content ||
+      text ||
+      evoMsg?.conversation ||
+      evoMsg?.extendedTextMessage?.text ||
+      evoMsg?.imageMessage?.caption ||
+      (evoMsg?.audioMessage ? 'audio' : '') ||
+      '';
+    const actualContentType =
+      content_type ||
+      (evoMsg?.audioMessage ? 'audio' : evoMsg?.imageMessage ? 'image' : evoMsg?.documentMessage ? 'document' : 'text');
 
-        if (convErr) {
-          return res.status(400).json({ error: convErr.message });
-        }
-        targetConvId = newConv.id;
-      }
-    }
+    const resolvedStatus = normalizeWebhookStatus(
+      rawStatus ?? body.data?.status ?? body.data?.update?.status,
+      detectedFromMe,
+      Boolean(viewed || is_read || read === true)
+    );
 
-    if (!targetConvId) {
+    const externalId = meta_message_id || rawWamid || evoKey?.id || message_id || null;
+
+    const convInfo = await resolveOrCreateConversationForWebhook({
+      conversationId: conversation_id,
+      phone: actualPhone,
+      contactName: actualName,
+      accountId: account_id || null,
+      channelId: channel_id || null,
+      isFromMe: detectedFromMe,
+      senderType: resolvedSenderType,
+      lastMessageText: actualContent,
+      nowIso,
+    });
+
+    if (!convInfo) {
       return res.status(400).json({ error: 'conversation_id ou phone é obrigatório' });
     }
 
-    // Insere a mensagem na tabela messages
+    // Idempotência por wamid / meta_message_id para não duplicar em reenvios do webhook
+    if (externalId) {
+      const { data: existingMsg } = await supabaseAdmin
+        .from('messages')
+        .select('*')
+        .eq('metadata->>wamid', String(externalId))
+        .maybeSingle();
+
+      if (existingMsg) {
+        await applyMessageStatusUpdate({
+          internalMessageId: existingMsg.id,
+          conversationId: convInfo.conversationId,
+          status: resolvedStatus,
+          isFromMe: detectedFromMe,
+          clearUnreadOnRead: true,
+        });
+        if (detectedFromMe) {
+          await supabaseAdmin
+            .from('conversations')
+            .update({ unread_count: 0, updated_at: nowIso })
+            .eq('id', convInfo.conversationId);
+        }
+        return res.status(200).json({
+          success: true,
+          deduplicated: true,
+          conversation_id: convInfo.conversationId,
+          message: existingMsg,
+        });
+      }
+    }
+
+    // Insere a mensagem na tabela messages já com sender_type e status corretos
     const { data: insertedMsg, error: msgErr } = await supabaseAdmin
       .from('messages')
       .insert({
-        conversation_id: targetConvId,
+        conversation_id: convInfo.conversationId,
         content: actualContent,
         content_type: actualContentType,
         media_url: media_url || null,
-        sender_type: 'contact',
+        sender_type: resolvedSenderType,
         sender_name: actualName,
-        status: 'delivered',
-        account_id: account_id || null,
+        status: resolvedStatus,
+        account_id: convInfo.accountId,
+        created_at: nowIso,
+        metadata: {
+          ...(typeof body.metadata === 'object' && body.metadata !== null ? body.metadata : {}),
+          wamid: externalId,
+          metaMessageId: externalId,
+          fromMe: detectedFromMe,
+          viaCoexistence: resolvedSenderType === 'coexistence_mobile',
+          source: detectedFromMe ? 'coexistence_webhook' : 'incoming_webhook',
+        },
       })
       .select('*')
       .single();
@@ -726,18 +1394,44 @@ app.post(['/api/messages/incoming', '/api/webhooks/incoming'], async (req, res) 
       return res.status(400).json({ error: msgErr.message });
     }
 
-    // Atualiza a conversa com a última mensagem e incrementa o contador
+    // Se a interação veio do celular físico / atendente, marca mensagens anteriores do cliente como lidas
+    if (detectedFromMe && resolvedSenderType !== 'ai' && resolvedSenderType !== 'bot') {
+      await supabaseAdmin
+        .from('messages')
+        .update({ status: 'read' })
+        .eq('conversation_id', convInfo.conversationId)
+        .in('sender_type', ['contact', 'customer'])
+        .neq('status', 'read');
+    }
+
+    // Atualiza a conversa: zera unread_count se fromMe/celular físico/IA, ou incrementa se cliente
+    const nextUnreadCount = detectedFromMe
+      ? 0
+      : convInfo.created
+      ? 1
+      : convInfo.currentUnreadCount + 1;
+
+    const convPatch: Record<string, any> = {
+      last_message_text: actualContent,
+      last_message_at: nowIso,
+      unread_count: nextUnreadCount,
+      updated_at: nowIso,
+    };
+
+    if (detectedFromMe && resolvedSenderType !== 'ai' && resolvedSenderType !== 'bot') {
+      convPatch.status = 'human';
+    }
+
     await supabaseAdmin
       .from('conversations')
-      .update({
-        last_message_text: actualContent,
-        last_message_at: new Date().toISOString(),
-      })
-      .eq('id', targetConvId);
+      .update(convPatch)
+      .eq('id', convInfo.conversationId);
 
     res.status(201).json({
       success: true,
-      conversation_id: targetConvId,
+      conversation_id: convInfo.conversationId,
+      fromMe: detectedFromMe,
+      unread_count: nextUnreadCount,
       message: insertedMsg,
     });
   } catch (err: any) {

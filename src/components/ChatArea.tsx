@@ -2135,18 +2135,36 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                           ? 'Lida'
                           : msg.status === 'delivered'
                           ? 'Entregue'
+                          : msg.status === 'failed'
+                          ? 'Falha no envio'
+                          : msg.status === 'pending'
+                          ? 'Enviando'
                           : 'Enviada'
                       }
                     >
-                      <CheckCheck
-                        className={`w-4 h-4 ${
-                          msg.status === 'read'
-                            ? 'text-[#53bdeb]' // Azul oficial do WhatsApp lido
-                            : darkMode
-                            ? 'text-[#8696a0]'
-                            : 'text-[#667781]'
-                        }`}
-                      />
+                      {msg.status === 'read' ? (
+                        <CheckCheck className="w-4 h-4 text-[#53bdeb]" />
+                      ) : msg.status === 'delivered' ? (
+                        <CheckCheck
+                          className={`w-4 h-4 ${
+                            darkMode ? 'text-[#8696a0]' : 'text-[#667781]'
+                          }`}
+                        />
+                      ) : msg.status === 'pending' ? (
+                        <Clock
+                          className={`w-3.5 h-3.5 ${
+                            darkMode ? 'text-[#8696a0]' : 'text-[#667781]'
+                          }`}
+                        />
+                      ) : msg.status === 'failed' ? (
+                        <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                      ) : (
+                        <Check
+                          className={`w-4 h-4 ${
+                            darkMode ? 'text-[#8696a0]' : 'text-[#667781]'
+                          }`}
+                        />
+                      )}
                     </span>
                   )}
                 </div>

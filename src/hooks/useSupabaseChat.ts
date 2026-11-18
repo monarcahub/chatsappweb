@@ -4,6 +4,7 @@ import {
   Conversation,
   Message,
   ConversationStatus,
+  MessageStatus,
   CRMStage,
   Tag,
   MessageSenderType,
@@ -50,6 +51,33 @@ const getStoredTags = (): Tag[] => {
     }
   } catch {}
   return INITIAL_TAGS;
+};
+
+const normalizeMessageStatus = (
+  rawStatus: unknown,
+  senderType?: MessageSenderType,
+  meta?: Record<string, any>
+): MessageStatus => {
+  if (meta?.read === true || meta?.viewed === true) {
+    return 'read';
+  }
+  const s = String(rawStatus ?? '').toLowerCase().trim();
+  if (s === 'read' || s === 'played' || s === 'seen' || s === 'viewed' || s === '3' || s === '4' || s === '5') {
+    return 'read';
+  }
+  if (s === 'delivered' || s === 'delivery_ack' || s === '2') {
+    return 'delivered';
+  }
+  if (s === 'sent' || s === 'server_ack' || s === 'pending' || s === '1' || s === '0') {
+    return 'sent';
+  }
+  if (s === 'failed' || s === 'error') {
+    return 'failed';
+  }
+  if (senderType && senderType !== 'contact' && senderType !== 'customer') {
+    return 'sent';
+  }
+  return 'delivered';
 };
 
 export function useSupabaseChat(
@@ -110,22 +138,28 @@ export function useSupabaseChat(
     // Regra explícita: Tudo o que NÃO for 'customer' ('agent', 'bot', 'coexistence_mobile', etc.)
     // fica no lado direito. As mensagens de 'customer'/'contact' ficam no lado esquerdo.
     const rawSender = String(row.sender_type || '').toLowerCase().trim();
+    const isFromMeMeta =
+      meta.fromMe === true ||
+      meta.from_me === true ||
+      meta.is_from_me === true ||
+      row.from_me === true;
     let senderType: MessageSenderType = 'contact';
 
-    if (rawSender === 'customer' || rawSender === 'contact' || rawSender === 'client' || rawSender === 'lead') {
-      senderType = 'contact';
-    } else if (rawSender === 'ai' || rawSender === 'bot' || rawSender === 'ia' || rawSender === 'assistant') {
+    if (rawSender === 'ai' || rawSender === 'bot' || rawSender === 'ia' || rawSender === 'assistant') {
       senderType = 'ai';
     } else if (
       rawSender === 'coexistence_mobile' ||
       rawSender === 'mobile' ||
       rawSender === 'device' ||
       rawSender === 'celular' ||
-      meta.viaCoexistence === true
+      meta.viaCoexistence === true ||
+      (isFromMeMeta && rawSender !== 'agent' && rawSender !== 'user' && rawSender !== 'system')
     ) {
       senderType = 'coexistence_mobile';
     } else if (rawSender === 'system') {
       senderType = 'system';
+    } else if (rawSender === 'customer' || rawSender === 'contact' || rawSender === 'client' || rawSender === 'lead') {
+      senderType = 'contact';
     } else {
       // Qualquer outro sender_type que não seja customer ('agent', 'user', 'attendant', etc.)
       senderType = 'agent';
@@ -218,7 +252,7 @@ export function useSupabaseChat(
       ),
       createdAt: row.created_at || new Date().toISOString(),
       timestamp: formatSaoPauloTime(row.created_at),
-      status: (row.status as any) || 'delivered',
+      status: normalizeMessageStatus(row.status, senderType, meta),
       reaction: meta.reaction || row.reaction,
       isStarred: Boolean(meta.isStarred || row.is_starred),
       metadata: {
@@ -246,16 +280,24 @@ export function useSupabaseChat(
           .order('created_at', { ascending: true });
 
         if (!error && data) {
-          const formatted = data.map(formatDatabaseMessage);
+          const formatted: Message[] = (data as any[]).map(formatDatabaseMessage);
           setMessages((prev) => {
             const currentList = prev[convId] || [];
-            // Se já tem a mesma quantidade e o último ID for idêntico, evita render desnecessário
-            const lastCurrent = currentList[currentList.length - 1] as Message | undefined;
-            const lastFormatted = formatted[formatted.length - 1] as Message | undefined;
-            if (
-              currentList.length === formatted.length &&
-              lastCurrent?.id === lastFormatted?.id
-            ) {
+            // Compara tamanho, IDs, status e conteúdo para refletir atualizações ('sent' -> 'delivered' -> 'read')
+            const hasChanges =
+              currentList.length !== formatted.length ||
+              currentList.some((curr, idx) => {
+                const next = formatted[idx];
+                return (
+                  !next ||
+                  curr.id !== next.id ||
+                  curr.status !== next.status ||
+                  curr.content !== next.content ||
+                  curr.reaction !== next.reaction ||
+                  Boolean(curr.isStarred) !== Boolean(next.isStarred)
+                );
+              });
+            if (!hasChanges) {
               return prev;
             }
             return {
@@ -434,16 +476,24 @@ export function useSupabaseChat(
 
             const latestMsg = latestMsgsMap.get(row.id);
             const rawSender = latestMsg ? String(latestMsg.sender_type || '').toLowerCase().trim() : '';
+            const latestMeta = typeof latestMsg?.metadata === 'object' && latestMsg?.metadata !== null ? latestMsg.metadata : {};
+            const latestFromMe = latestMeta.fromMe === true || latestMeta.from_me === true || latestMeta.viaCoexistence === true;
 
             let senderType: MessageSenderType = 'contact';
-            if (rawSender === 'customer' || rawSender === 'contact' || rawSender === 'client' || rawSender === 'lead') {
-              senderType = 'contact';
-            } else if (rawSender === 'coexistence_mobile' || rawSender === 'mobile' || rawSender === 'device' || rawSender === 'celular') {
-              senderType = 'coexistence_mobile';
-            } else if (rawSender === 'ai' || rawSender === 'bot') {
+            if (rawSender === 'ai' || rawSender === 'bot' || rawSender === 'ia' || rawSender === 'assistant') {
               senderType = 'ai';
+            } else if (
+              rawSender === 'coexistence_mobile' ||
+              rawSender === 'mobile' ||
+              rawSender === 'device' ||
+              rawSender === 'celular' ||
+              (latestFromMe && rawSender !== 'agent' && rawSender !== 'user')
+            ) {
+              senderType = 'coexistence_mobile';
             } else if (rawSender === 'agent' || rawSender === 'user') {
               senderType = 'agent';
+            } else if (rawSender === 'customer' || rawSender === 'contact' || rawSender === 'client' || rawSender === 'lead') {
+              senderType = 'contact';
             } else if (row.last_message_text && /^(audio|áudio)/i.test(String(row.last_message_text).trim())) {
               // Se foi preenchido "audio" diretamente pelo usuário para indicar áudio enviado
               senderType = 'coexistence_mobile';
@@ -516,11 +566,11 @@ export function useSupabaseChat(
                 text: row.last_message_text || (isAudioMsg ? 'audio' : latestMsg?.content || 'Conversa iniciada'),
                 timestamp: formatSaoPauloTime(row.last_message_at || latestMsg?.created_at),
                 senderType,
-                status: (latestMsg?.status as any) || 'delivered',
+                status: normalizeMessageStatus(latestMsg?.status, senderType, latestMeta),
                 contentType,
                 mediaDuration,
               },
-              unreadCount: row.unread_count || 0,
+              unreadCount: selectedIdRef.current === row.id ? 0 : (row.unread_count || 0),
               isPinned: false,
               isArchived: storedArchivedIds.has(row.id),
               isFavorite: false,
@@ -675,6 +725,35 @@ export function useSupabaseChat(
             newMsg.metadata?.isSystemEvent === true ||
             formattedMessage.senderType === 'system';
 
+          const isOutgoingFromSide =
+            !isSystemEvent &&
+            formattedMessage.senderType !== 'contact' &&
+            formattedMessage.senderType !== 'customer';
+
+          const isFromPhysicalOrAgent =
+            formattedMessage.senderType === 'coexistence_mobile' ||
+            formattedMessage.senderType === 'agent';
+
+          // Se a mensagem partiu do celular físico ou do atendente, marca mensagens anteriores do cliente como lidas no estado local
+          if (isFromPhysicalOrAgent) {
+            setMessages((prev) => {
+              const list = prev[convId];
+              if (!list || list.length === 0) return prev;
+              const hasUnreadContact = list.some(
+                (m) => (m.senderType === 'contact' || m.senderType === 'customer') && m.status !== 'read'
+              );
+              if (!hasUnreadContact) return prev;
+              return {
+                ...prev,
+                [convId]: list.map((m) =>
+                  (m.senderType === 'contact' || m.senderType === 'customer') && m.status !== 'read'
+                    ? { ...m, status: 'read' }
+                    : m
+                ),
+              };
+            });
+          }
+
           // Atualiza a conversa na lista lateral SOMENTE se NÃO for mensagem/evento de sistema
           // (Eventos como 'Pra IA' ou 'Assumir' não devem alterar o preview da última mensagem nem mover a conversa para o topo)
           if (!isSystemEvent) {
@@ -696,14 +775,25 @@ export function useSupabaseChat(
                     newMsg.content
                   );
 
+                  // Se partiu do atendente, celular físico (fromMe) ou IA, OU conversa já está aberta -> unreadCount = 0
+                  const nextUnreadCount =
+                    isOutgoingFromSide || isCurrentActive ? 0 : c.unreadCount + 1;
+                  const nextConvStatus: ConversationStatus =
+                    isFromPhysicalOrAgent ? 'human' : c.status;
+
                   return {
                     ...c,
-                    unreadCount: isCurrentActive ? 0 : c.unreadCount + 1,
+                    status: nextConvStatus,
+                    unreadCount: nextUnreadCount,
+                    contact: {
+                      ...c.contact,
+                      aiStatus: nextConvStatus === 'ai' ? 'active' : 'inactive',
+                    },
                     lastMessage: {
                       text: newMsg.content || (isAudio ? 'audio' : 'Nova mensagem'),
                       timestamp: formatSaoPauloTime(newMsg.created_at),
                       senderType: formattedMessage.senderType,
-                      status: isCurrentActive ? 'read' : 'delivered',
+                      status: formattedMessage.status,
                       contentType: isAudio ? 'audio' : (newMsg.content_type || 'text'),
                       mediaDuration,
                     },
@@ -713,10 +803,19 @@ export function useSupabaseChat(
                 return c;
               })
             );
+
+            // Garante que unread_count seja limpo no banco se a conversa está aberta ou a mensagem veio do celular físico/atendente
+            if ((selectedIdRef.current === convId || isOutgoingFromSide) && isSupabaseConfigured) {
+              supabase
+                .from('conversations')
+                .update({ unread_count: 0 })
+                .eq('id', convId)
+                .then(() => {});
+            }
           }
 
-          // Dispara som e notificação da área de trabalho se for mensagem recebida (NUNCA para atendente nem para eventos do sistema)
-          if (newMsg.sender_type !== 'agent' && !isSystemEvent) {
+          // Dispara som e notificação da área de trabalho APENAS para mensagens recebidas do cliente
+          if (!isSystemEvent && !isOutgoingFromSide) {
             const currentConv = conversationsRef.current.find((c) => c.id === convId);
             const senderTitle = currentConv?.contact.name || newMsg.sender_name || 'Novo Atendimento';
             showDesktopNotification({
@@ -744,13 +843,48 @@ export function useSupabaseChat(
           if (!convId) return;
 
           const formatted = formatDatabaseMessage(updatedMsg);
+          let isLatestInConv = false;
+
           setMessages((prev) => {
             const currentList = prev[convId] || [];
+            const lastIdx = currentList.length - 1;
             return {
               ...prev,
-              [convId]: currentList.map((m) => (m.id === formatted.id ? { ...m, ...formatted } : m)),
+              [convId]: currentList.map((m, idx) => {
+                if (m.id === formatted.id) {
+                  if (idx === lastIdx) isLatestInConv = true;
+                  return { ...m, ...formatted };
+                }
+                return m;
+              }),
             };
           });
+
+          // Atualiza o status da última mensagem na lista lateral e zera unreadCount se mensagem do cliente foi marcada como lida
+          setConversations((prev) =>
+            prev.map((c) => {
+              if (c.id !== convId) return c;
+              const matchesLast =
+                isLatestInConv ||
+                (c.lastMessage?.text && formatted.content && c.lastMessage.text === formatted.content);
+              const shouldClearUnread =
+                formatted.status === 'read' &&
+                (formatted.senderType === 'contact' || formatted.senderType === 'customer');
+
+              if (!matchesLast && !shouldClearUnread) return c;
+
+              return {
+                ...c,
+                unreadCount: shouldClearUnread ? 0 : c.unreadCount,
+                lastMessage: matchesLast
+                  ? {
+                      ...c.lastMessage,
+                      status: formatted.status,
+                    }
+                  : c.lastMessage,
+              };
+            })
+          );
         }
       )
       .on(
@@ -788,12 +922,20 @@ export function useSupabaseChat(
                    newText.includes('assumiu o atendimento') ||
                    newText.includes('finalizou o atendimento'));
 
+                const nextUnreadCount =
+                  selectedIdRef.current === updated.id
+                    ? 0
+                    : updated.unread_count !== undefined && updated.unread_count !== null
+                    ? Math.max(0, Number(updated.unread_count) || 0)
+                    : c.unreadCount;
+
                 return {
                   ...c,
                   status: (updated.status as ConversationStatus) || c.status,
                   crmStage: (updated.crm_stage as CRMStage) || c.crmStage,
                   notes: updated.notes !== undefined ? updated.notes : c.notes,
                   tags: updated.tags || c.tags,
+                  unreadCount: nextUnreadCount,
                   lastMessage: {
                     ...c.lastMessage,
                     text: isSystemText ? c.lastMessage.text : (newText || (isAudio ? 'audio' : c.lastMessage.text)),
@@ -843,11 +985,36 @@ export function useSupabaseChat(
         prev.map((c) => (c.id === id ? { ...c, unreadCount: 0 } : c))
       );
 
+      setMessages((prev) => {
+        const list = prev[id];
+        if (!list || list.length === 0) return prev;
+        const hasUnread = list.some(
+          (m) => (m.senderType === 'contact' || m.senderType === 'customer') && m.status !== 'read'
+        );
+        if (!hasUnread) return prev;
+        return {
+          ...prev,
+          [id]: list.map((m) =>
+            (m.senderType === 'contact' || m.senderType === 'customer') && m.status !== 'read'
+              ? { ...m, status: 'read' }
+              : m
+          ),
+        };
+      });
+
       if (isSupabaseConfigured) {
         supabase
           .from('conversations')
           .update({ unread_count: 0 })
           .eq('id', id)
+          .then(() => {});
+
+        supabase
+          .from('messages')
+          .update({ status: 'read' })
+          .eq('conversation_id', id)
+          .in('sender_type', ['contact', 'customer'])
+          .neq('status', 'read')
           .then(() => {});
       }
     },
@@ -1022,6 +1189,7 @@ export function useSupabaseChat(
             return {
               ...c,
               status: 'human' as ConversationStatus,
+              unreadCount: 0,
               contact: {
                 ...c.contact,
                 aiStatus: 'inactive',
@@ -1159,6 +1327,7 @@ export function useSupabaseChat(
             .from('conversations')
             .update({
               status: 'human',
+              unread_count: 0,
               last_message_text: msgContent,
               last_message_at: nowIso,
               updated_at: nowIso,

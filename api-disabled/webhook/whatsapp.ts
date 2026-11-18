@@ -7,6 +7,23 @@ function getSupabaseClient() {
   return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 }
 
+type StandardMsgStatus = 'sent' | 'delivered' | 'read';
+
+function normalizeStatus(rawStatus: unknown, isFromMe: boolean, isViewed: boolean = false): StandardMsgStatus {
+  if (isViewed) return 'read';
+  const s = String(rawStatus ?? '').toLowerCase().trim();
+  if (s === 'read' || s === 'played' || s === 'seen' || s === 'viewed' || s === '3' || s === '4' || s === '5') {
+    return 'read';
+  }
+  if (s === 'delivered' || s === 'delivery_ack' || s === '2') {
+    return 'delivered';
+  }
+  if (s === 'sent' || s === 'server_ack' || s === 'pending' || s === '1' || s === '0') {
+    return 'sent';
+  }
+  return isFromMe ? 'sent' : 'delivered';
+}
+
 async function getOrCreateConversation(supabase: any, params: {
   channelName: string;
   channelType: 'whatsapp' | 'instagram' | 'webchat';
@@ -15,12 +32,15 @@ async function getOrCreateConversation(supabase: any, params: {
   contactEmail?: string;
   instagramUsername?: string;
   avatarUrl?: string;
+  isFromMe?: boolean;
 }) {
   if (!supabase) {
     return {
       conversationId: `sim-conv-${Date.now()}`,
       contactId: `sim-cont-${Date.now()}`,
-      status: 'ai',
+      status: params.isFromMe ? 'human' : 'ai',
+      unreadCount: 0,
+      created: true,
       isMock: true,
     };
   }
@@ -100,18 +120,20 @@ async function getOrCreateConversation(supabase: any, params: {
       contactId,
       status: existingConv.status || 'ai',
       unreadCount: existingConv.unread_count || 0,
+      created: false,
       isMock: false,
     };
   }
 
+  const initialConvStatus = params.isFromMe ? 'human' : 'ai';
   const { data: newConv, error: createConvErr } = await supabase
     .from('conversations')
     .insert({
       channel_id: channelId,
       contact_id: contactId,
-      status: 'ai',
+      status: initialConvStatus,
       crm_stage: 'novo_lead',
-      unread_count: 1,
+      unread_count: params.isFromMe ? 0 : 1,
     })
     .select('id, status')
     .single();
@@ -121,8 +143,9 @@ async function getOrCreateConversation(supabase: any, params: {
   return {
     conversationId: newConv.id,
     contactId,
-    status: newConv.status || 'ai',
-    unreadCount: 1,
+    status: newConv.status || initialConvStatus,
+    unreadCount: params.isFromMe ? 0 : 1,
+    created: true,
     isMock: false,
   };
 }
@@ -146,25 +169,73 @@ export default async function handler(req: any, res: any) {
   try {
     const body = req.body || {};
     const supabase = getSupabaseClient();
+    const nowIso = new Date().toISOString();
 
-    // Normalização de payload (Meta Cloud API, Evolution API ou Z-API)
+    // 1.1 Atualização de status (Meta statuses[] ou Evolution messages.update)
+    const metaStatuses = body.object === 'whatsapp_business_account'
+      ? body.entry?.[0]?.changes?.[0]?.value?.statuses
+      : null;
+
+    if (Array.isArray(metaStatuses) && metaStatuses.length > 0 && supabase) {
+      for (const st of metaStatuses) {
+        const nextStatus = normalizeStatus(st.status, true);
+        await supabase
+          .from('messages')
+          .update({ status: nextStatus })
+          .eq('metadata->>wamid', st.id);
+      }
+      return res.status(200).json({ success: true, event: 'meta_statuses', count: metaStatuses.length });
+    }
+
+    const evoEvent = String(body.event || '').toLowerCase().trim();
+    if (evoEvent === 'messages.update' && supabase) {
+      const upd = Array.isArray(body.data) ? body.data[0] : body.data || {};
+      const extId = upd?.keyId || upd?.key?.id || upd?.id;
+      const nextStatus = normalizeStatus(upd?.update?.status ?? upd?.status, Boolean(upd?.fromMe ?? upd?.key?.fromMe));
+      if (extId) {
+        await supabase
+          .from('messages')
+          .update({ status: nextStatus })
+          .eq('metadata->>wamid', String(extId));
+      }
+      return res.status(200).json({ success: true, event: 'messages.update', status: nextStatus });
+    }
+
+    // Normalização de payload (Meta Cloud API, Coexistência smb_message_echoes, Evolution API)
     let senderPhone = '';
     let senderName = '';
     let messageText = '';
     let messageId = `msg-${Date.now()}`;
     let mediaUrl: string | undefined = undefined;
     let channelName = 'WhatsApp Oficial';
+    let isFromMe = Boolean(
+      body.fromMe === true ||
+      body.from_me === true ||
+      body.is_from_me === true ||
+      body.data?.key?.fromMe === true ||
+      body.key?.fromMe === true
+    );
+    let rawStatus: unknown = body.status ?? body.data?.status;
 
     if (body.object === 'whatsapp_business_account') {
       const entry = body.entry?.[0];
-      const change = entry?.changes?.[0]?.value;
-      const contact = change?.contacts?.[0];
-      const message = change?.messages?.[0];
+      const change = entry?.changes?.[0];
+      const field = String(change?.field || '');
+      const value = change?.value || {};
+      const contact = value?.contacts?.[0];
+      const isEcho = field === 'smb_message_echoes' || field === 'message_echoes' || Array.isArray(value?.message_echoes);
+      const message = (isEcho ? value?.message_echoes?.[0] : value?.messages?.[0]) || value?.messages?.[0];
 
       if (message) {
-        senderPhone = contact?.wa_id || message.from || '';
-        senderName = contact?.profile?.name || `WhatsApp ${senderPhone}`;
+        if (isEcho || message.fromMe === true) isFromMe = true;
+        senderPhone = isFromMe
+          ? message.to || contact?.wa_id || ''
+          : contact?.wa_id || message.from || '';
+        senderName = isFromMe
+          ? 'Dispositivo Móvel'
+          : contact?.profile?.name || `WhatsApp ${senderPhone}`;
         messageId = message.id || messageId;
+        rawStatus = message.status ?? rawStatus;
 
         if (message.type === 'text') {
           messageText = message.text?.body || '';
@@ -178,12 +249,14 @@ export default async function handler(req: any, res: any) {
       }
     } else if (body.data?.key?.remoteJid || body.sender || body.phone) {
       senderPhone = body.data?.key?.remoteJid?.split('@')[0] || body.sender || body.phone || '';
-      senderName = body.data?.pushName || body.senderName || `WhatsApp ${senderPhone}`;
-      messageText = body.data?.message?.conversation || body.message?.text || body.text || body.content || '';
+      senderName = isFromMe
+        ? 'Dispositivo Móvel'
+        : body.data?.pushName || body.senderName || `WhatsApp ${senderPhone}`;
+      messageText = body.data?.message?.conversation || body.data?.message?.extendedTextMessage?.text || body.message?.text || body.text || body.content || '';
       messageId = body.data?.key?.id || messageId;
     } else {
       senderPhone = body.phone || body.from || '+55 51 99999-9999';
-      senderName = body.name || body.sender_name || 'Cliente WhatsApp';
+      senderName = isFromMe ? 'Dispositivo Móvel' : (body.name || body.sender_name || 'Cliente WhatsApp');
       messageText = body.text || body.content || body.message || 'Olá';
     }
 
@@ -191,51 +264,75 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json({ status: 'ignored', reason: 'Payload sem telefone ou texto legível' });
     }
 
-    const { conversationId, status, unreadCount, isMock } = await getOrCreateConversation(supabase, {
+    const resolvedSenderType = isFromMe ? 'coexistence_mobile' : 'contact';
+    const resolvedMessageStatus = normalizeStatus(
+      rawStatus,
+      isFromMe,
+      Boolean(body.viewed || body.is_read || body.read === true)
+    );
+
+    const { conversationId, status, unreadCount, created, isMock } = await getOrCreateConversation(supabase, {
       channelName,
       channelType: 'whatsapp',
       contactName: senderName,
       contactPhone: senderPhone,
+      isFromMe,
     });
-
-    const nowIso = new Date().toISOString();
 
     if (supabase && !isMock) {
       await supabase.from('messages').insert({
-        id: messageId,
         conversation_id: conversationId,
-        sender_type: 'contact',
+        sender_type: resolvedSenderType,
         sender_name: senderName,
         content: messageText,
         media_url: mediaUrl,
         created_at: nowIso,
-        status: 'delivered',
+        status: resolvedMessageStatus,
         metadata: {
           channel: 'whatsapp',
-          source: 'webhook',
+          wamid: messageId,
+          metaMessageId: messageId,
+          fromMe: isFromMe,
+          viaCoexistence: isFromMe,
+          source: isFromMe ? 'coexistence_webhook' : 'webhook',
         },
       });
+
+      if (isFromMe) {
+        await supabase
+          .from('messages')
+          .update({ status: 'read' })
+          .eq('conversation_id', conversationId)
+          .in('sender_type', ['contact', 'customer'])
+          .neq('status', 'read');
+      }
+
+      const nextUnreadCount = isFromMe ? 0 : created ? 1 : (unreadCount || 0) + 1;
 
       await supabase
         .from('conversations')
         .update({
           last_message_text: messageText,
           last_message_at: nowIso,
-          unread_count: (unreadCount || 0) + 1,
+          unread_count: nextUnreadCount,
+          ...(isFromMe ? { status: 'human' } : {}),
           updated_at: nowIso,
         })
         .eq('id', conversationId);
     }
 
-    const isHumanHandling = status === 'human';
-    const isAiEligible = status === 'ai';
+    const effectiveStatus = isFromMe ? 'human' : status;
+    const isHumanHandling = effectiveStatus === 'human';
+    const isAiEligible = effectiveStatus === 'ai';
 
     return res.status(200).json({
       success: true,
       message: 'Mensagem do WhatsApp processada com sucesso',
       conversation_id: conversationId,
       message_id: messageId,
-      status,
+      fromMe: isFromMe,
+      message_status: resolvedMessageStatus,
+      status: effectiveStatus,
       ai_suppressed: isHumanHandling,
       ai_eligible: isAiEligible,
       takeover_reason: isHumanHandling

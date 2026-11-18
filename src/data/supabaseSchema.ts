@@ -149,14 +149,68 @@ CREATE INDEX IF NOT EXISTS idx_messages_account_id ON public.messages(account_id
 CREATE INDEX IF NOT EXISTS idx_messages_conv_created ON public.messages(conversation_id, created_at ASC);
 
 -- =========================================================================
--- 8. TRIGGER: ATUALIZAR CONVERSA AO INSERIR NOVA MENSAGEM
+-- 8. TRIGGER: NORMALIZAR MENSAGEM DE COEXISTÊNCIA E ATUALIZAR CONVERSA
 -- =========================================================================
+CREATE OR REPLACE FUNCTION public.normalize_coexistence_message()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_is_from_me BOOLEAN;
+    v_raw_status TEXT;
+BEGIN
+    v_is_from_me := COALESCE((NEW.metadata->>'fromMe')::boolean, false)
+        OR COALESCE((NEW.metadata->>'from_me')::boolean, false)
+        OR COALESCE((NEW.metadata->>'viaCoexistence')::boolean, false);
+
+    -- Se veio sinalizado fromMe mas o fluxo gravou como contact/customer, corrige para coexistence_mobile
+    IF v_is_from_me AND NEW.sender_type IN ('contact', 'customer') THEN
+        NEW.sender_type := 'coexistence_mobile';
+    END IF;
+
+    -- Padroniza status para os valores esperados pelo frontend ('sent', 'delivered', 'read')
+    v_raw_status := lower(trim(COALESCE(NEW.status, '')));
+    IF v_raw_status IN ('read', 'played', 'seen', 'viewed', '3', '4', '5') THEN
+        NEW.status := 'read';
+    ELSIF v_raw_status IN ('delivered', 'delivery_ack', '2') THEN
+        NEW.status := 'delivered';
+    ELSIF v_raw_status IN ('sent', 'server_ack', 'pending', '1', '0') THEN
+        NEW.status := 'sent';
+    ELSIF NEW.sender_type IN ('agent', 'coexistence_mobile', 'ai', 'bot') THEN
+        NEW.status := 'sent';
+    ELSE
+        NEW.status := 'delivered';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_before_message_insert_normalize ON public.messages;
+CREATE TRIGGER trg_before_message_insert_normalize
+BEFORE INSERT ON public.messages
+FOR EACH ROW
+EXECUTE FUNCTION public.normalize_coexistence_message();
+
 CREATE OR REPLACE FUNCTION public.handle_new_message()
 RETURNS TRIGGER AS $$
+DECLARE
+    v_is_from_me BOOLEAN;
 BEGIN
     -- Ignora eventos de sistema (takeover, resume_ai, encerramento) para não alterar o preview nem mover a conversa para o topo
     IF NEW.sender_type = 'system' OR (NEW.metadata->>'isSystemEvent')::boolean IS TRUE THEN
         RETURN NEW;
+    END IF;
+
+    v_is_from_me := NEW.sender_type IN ('agent', 'coexistence_mobile', 'ai', 'bot')
+        OR COALESCE((NEW.metadata->>'fromMe')::boolean, false)
+        OR COALESCE((NEW.metadata->>'from_me')::boolean, false);
+
+    -- Se o atendente respondeu (web ou celular físico), marca mensagens anteriores do cliente como lidas
+    IF NEW.sender_type IN ('agent', 'coexistence_mobile') OR (v_is_from_me AND NEW.sender_type NOT IN ('ai', 'bot')) THEN
+        UPDATE public.messages
+        SET status = 'read'
+        WHERE conversation_id = NEW.conversation_id
+          AND sender_type IN ('contact', 'customer')
+          AND status <> 'read';
     END IF;
 
     UPDATE public.conversations
@@ -164,11 +218,17 @@ BEGIN
         last_message_text = NEW.content,
         last_message_at = NEW.created_at,
         unread_count = CASE 
-            WHEN NEW.sender_type IN ('contact', 'customer') THEN unread_count + 1 
-            ELSE unread_count 
+            WHEN v_is_from_me THEN 0
+            WHEN NEW.sender_type IN ('contact', 'customer') THEN COALESCE(unread_count, 0) + 1 
+            ELSE COALESCE(unread_count, 0)
+        END,
+        status = CASE
+            WHEN NEW.sender_type IN ('agent', 'coexistence_mobile') OR (v_is_from_me AND NEW.sender_type NOT IN ('ai', 'bot')) THEN 'human'
+            ELSE status
         END,
         updated_at = NOW()
-    WHERE id = NEW.conversation_id AND account_id = NEW.account_id;
+    WHERE id = NEW.conversation_id
+      AND (NEW.account_id IS NULL OR account_id = NEW.account_id);
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -1145,4 +1205,161 @@ $$;
 REVOKE ALL ON FUNCTION public.reactivate_channel_conversations_ai(UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.reactivate_channel_conversations_ai(UUID) TO authenticated;
 `;
+
+// =========================================================================
+// 16. MIGRAÇÃO PARA COEXISTÊNCIA: STATUS ('sent', 'delivered', 'read') E UNREAD_COUNT
+// Execute no SQL Editor do Supabase para corrigir triggers de mensagens via celular físico (fromMe)
+// =========================================================================
+export const COEXISTENCE_UNREAD_AND_STATUS_FIX_SQL = `-- =========================================================================
+-- CORREÇÃO DE COEXISTÊNCIA / CELULAR FÍSICO (fromMe + unread_count + status)
+-- Seguro e idempotente para execução em produção
+-- =========================================================================
+
+ALTER TABLE public.messages ADD COLUMN IF NOT EXISTS meta_message_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_messages_meta_message_id ON public.messages(meta_message_id);
+CREATE INDEX IF NOT EXISTS idx_messages_metadata_wamid ON public.messages ((metadata->>'wamid'));
+
+CREATE OR REPLACE FUNCTION public.normalize_coexistence_message()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_is_from_me BOOLEAN;
+    v_raw_status TEXT;
+BEGIN
+    v_is_from_me := COALESCE((NEW.metadata->>'fromMe')::boolean, false)
+        OR COALESCE((NEW.metadata->>'from_me')::boolean, false)
+        OR COALESCE((NEW.metadata->>'viaCoexistence')::boolean, false);
+
+    IF v_is_from_me AND NEW.sender_type IN ('contact', 'customer') THEN
+        NEW.sender_type := 'coexistence_mobile';
+    END IF;
+
+    v_raw_status := lower(trim(COALESCE(NEW.status, '')));
+    IF v_raw_status IN ('read', 'played', 'seen', 'viewed', '3', '4', '5') THEN
+        NEW.status := 'read';
+    ELSIF v_raw_status IN ('delivered', 'delivery_ack', '2') THEN
+        NEW.status := 'delivered';
+    ELSIF v_raw_status IN ('sent', 'server_ack', 'pending', '1', '0') THEN
+        NEW.status := 'sent';
+    ELSIF NEW.sender_type IN ('agent', 'coexistence_mobile', 'ai', 'bot') THEN
+        NEW.status := 'sent';
+    ELSE
+        NEW.status := 'delivered';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_before_message_insert_normalize ON public.messages;
+CREATE TRIGGER trg_before_message_insert_normalize
+BEFORE INSERT ON public.messages
+FOR EACH ROW
+EXECUTE FUNCTION public.normalize_coexistence_message();
+
+CREATE OR REPLACE FUNCTION public.handle_new_message()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_is_from_me BOOLEAN;
+BEGIN
+    IF NEW.sender_type = 'system' OR (NEW.metadata->>'isSystemEvent')::boolean IS TRUE THEN
+        RETURN NEW;
+    END IF;
+
+    v_is_from_me := NEW.sender_type IN ('agent', 'coexistence_mobile', 'ai', 'bot')
+        OR COALESCE((NEW.metadata->>'fromMe')::boolean, false)
+        OR COALESCE((NEW.metadata->>'from_me')::boolean, false);
+
+    IF NEW.sender_type IN ('agent', 'coexistence_mobile') OR (v_is_from_me AND NEW.sender_type NOT IN ('ai', 'bot')) THEN
+        UPDATE public.messages
+        SET status = 'read'
+        WHERE conversation_id = NEW.conversation_id
+          AND sender_type IN ('contact', 'customer')
+          AND status <> 'read';
+    END IF;
+
+    UPDATE public.conversations
+    SET
+        last_message_text = NEW.content,
+        last_message_at = NEW.created_at,
+        unread_count = CASE
+            WHEN v_is_from_me THEN 0
+            WHEN NEW.sender_type IN ('contact', 'customer') THEN COALESCE(unread_count, 0) + 1
+            ELSE COALESCE(unread_count, 0)
+        END,
+        status = CASE
+            WHEN NEW.sender_type IN ('agent', 'coexistence_mobile') OR (v_is_from_me AND NEW.sender_type NOT IN ('ai', 'bot')) THEN 'human'
+            ELSE status
+        END,
+        updated_at = NOW()
+    WHERE id = NEW.conversation_id
+      AND (NEW.account_id IS NULL OR account_id = NEW.account_id);
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_after_message_insert ON public.messages;
+CREATE TRIGGER trg_after_message_insert
+AFTER INSERT ON public.messages
+FOR EACH ROW
+EXECUTE FUNCTION public.handle_new_message();
+
+-- RPC auxiliar para o n8n atualizar status ('sent', 'delivered', 'read') e limpar unread_count
+CREATE OR REPLACE FUNCTION public.sync_whatsapp_message_status(
+    p_wamid TEXT,
+    p_status TEXT,
+    p_conversation_id UUID DEFAULT NULL,
+    p_clear_unread BOOLEAN DEFAULT false
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    v_norm_status TEXT;
+    v_target_conv_id UUID := p_conversation_id;
+    v_updated_msgs INT := 0;
+BEGIN
+    v_norm_status := CASE lower(trim(COALESCE(p_status, '')))
+        WHEN 'read' THEN 'read'
+        WHEN 'played' THEN 'read'
+        WHEN 'seen' THEN 'read'
+        WHEN '3' THEN 'read'
+        WHEN '4' THEN 'read'
+        WHEN 'delivered' THEN 'delivered'
+        WHEN 'delivery_ack' THEN 'delivered'
+        WHEN '2' THEN 'delivered'
+        ELSE 'sent'
+    END;
+
+    WITH updated AS (
+        UPDATE public.messages
+        SET status = v_norm_status
+        WHERE (meta_message_id = p_wamid OR metadata->>'wamid' = p_wamid OR metadata->>'metaMessageId' = p_wamid)
+          AND (
+              (status IN ('pending', 'sent') AND v_norm_status IN ('sent', 'delivered', 'read'))
+              OR (status = 'delivered' AND v_norm_status = 'read')
+              OR status IS NULL
+          )
+        RETURNING conversation_id
+    )
+    SELECT count(*), max(conversation_id) INTO v_updated_msgs, v_target_conv_id FROM updated;
+
+    IF v_target_conv_id IS NOT NULL AND (p_clear_unread OR v_norm_status = 'read') THEN
+        UPDATE public.conversations
+        SET unread_count = 0, updated_at = NOW()
+        WHERE id = v_target_conv_id;
+    END IF;
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'status', v_norm_status,
+        'updated_messages', v_updated_msgs,
+        'conversation_id', v_target_conv_id
+    );
+END;
+$$;
+`;
+
 

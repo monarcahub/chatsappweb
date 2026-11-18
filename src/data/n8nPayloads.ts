@@ -64,37 +64,37 @@ export const N8N_PAYLOAD_GUIDES: N8nPayloadExample[] = [
     }
   },
   {
-    title: '3. Inserção Formatada com Idempotência (Messages)',
-    description: 'Estrutura JSON para persistência na tabela "messages". O trigger automático atualiza a ordenação da conversa e a contagem de não lidas.',
-    componentNode: 'Gravação no Banco',
+    title: '3. Inserção Idempotente + Coexistência (Messages)',
+    description: 'Se fromMe=true (celular físico / smb_message_echoes), gravar sender_type="coexistence_mobile" e status="sent" (ou "read"). O trigger zera unread_count automaticamente.',
+    componentNode: 'Gravação no Banco (n8n -> Supabase)',
     payload: {
       conversation_id: 'c87f2231-10d9-4a0b-99d8-91fb5796b4ef',
-      sender_type: 'customer', // 'customer' | 'agent' | 'bot' | 'coexistence_mobile'
-      sender_name: 'Joseane Silva',
-      content_type: 'text', // 'text' | 'audio' | 'image' | 'video'
-      content: 'Olá, gostaria de saber se vocês têm horário disponível para amanhã?',
-      status: 'delivered',
-      meta_message_id: 'wamid.HBgLMTE5ODc2NTQzMjEVAgASGBQzQjE2RkFFMzE0MTI4Qzg5', // Garante unicidade
+      sender_type: 'coexistence_mobile', // 'contact' | 'agent' | 'ai' | 'coexistence_mobile'
+      sender_name: 'Dispositivo Móvel',
+      content_type: 'text',
+      content: 'Perfeito! Já deixei agendado para você às 10h.',
+      status: 'sent', // 'sent' | 'delivered' | 'read' (nunca deixar pendente)
+      meta_message_id: 'wamid.HBgLMTE5ODc2NTQzMjEVAgASGBQzQjE2RkFFMzE0MTI4Qzg5',
       metadata: {
         channel: 'whatsapp',
-        phone_number_id: 'PHONE_NUMBER_ID_4829',
-        raw_timestamp: 1725648800,
-        ai_evaluation_needed: true
+        fromMe: true,
+        viaCoexistence: true,
+        wamid: 'wamid.HBgLMTE5ODc2NTQzMjEVAgASGBQzQjE2RkFFMzE0MTI4Qzg5',
       }
     }
   },
   {
-    title: '4. Atualização de Status de Leitura (Check Azul no WhatsApp)',
-    description: 'Quando a confirmação de leitura é recebida, o status da mensagem é atualizado usando o meta_message_id.',
-    componentNode: 'Atualização de Leitura',
+    title: '4. Atualização de Status (sent / delivered / read) e Limpeza de Não Lidas',
+    description: 'Ao receber messages.update (Evolution) ou statuses[] (Meta), atualize status na tabela messages e zere unread_count na conversa quando lida/sincronizada.',
+    componentNode: 'Atualização de Status (Webhook -> Supabase)',
     payload: {
-      target_table: 'messages',
-      match_column: 'meta_message_id',
+      webhook_endpoint: '/api/webhooks/incoming',
+      match_column: 'metadata->>wamid',
       match_value: 'wamid.HBgLMTE5ODc2NTQzMjEVAgASGBQzQjE2RkFFMzE0MTI4Qzg5',
-      update_fields: {
-        status: 'read',
-        read_at: '2026-09-06T19:45:00Z'
-      }
+      status: 'read', // Normalizado para: 'sent' | 'delivered' | 'read'
+      fromMe: true,
+      clear_conversation_unread: true,
+      rpc_alternative: 'sync_whatsapp_message_status(p_wamid, p_status, p_conversation_id, p_clear_unread)'
     }
   },
   {
