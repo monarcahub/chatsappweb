@@ -213,3 +213,27 @@ export interface AccountSubscriptionStatus {
   rawRpcKeys?: string[];
 }
 
+export type AIScheduleScope = 'global' | 'channel';
+
+export type AIScheduleMode = 'active_window' | 'paused_window';
+
+export interface AIScheduleRule {
+  id: string;
+  account_id: string;
+  channel_id: string | null;
+  scope: AIScheduleScope;
+  name: string;
+  mode: AIScheduleMode;
+  days_of_week: number[];
+  start_time: string;
+  end_time: string;
+  timezone: string;
+  is_enabled: boolean;
+  last_slot_key?: string | null;
+  last_applied_state?: boolean | null;
+  last_executed_at?: string | null;
+  created_by?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+

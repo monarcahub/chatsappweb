@@ -1204,6 +1204,37 @@ $$;
 -- Restringe execução apenas para usuários autenticados
 REVOKE ALL ON FUNCTION public.reactivate_channel_conversations_ai(UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.reactivate_channel_conversations_ai(UUID) TO authenticated;
+
+-- =========================================================================
+-- 16. AGENDAMENTO AUTOMÁTICO DA IA (ai_schedules + process_ai_schedules)
+-- =========================================================================
+CREATE TABLE IF NOT EXISTS public.ai_schedules (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    account_id UUID NOT NULL REFERENCES public.accounts(id) ON DELETE CASCADE,
+    channel_id UUID REFERENCES public.channels(id) ON DELETE CASCADE,
+    scope VARCHAR(20) NOT NULL DEFAULT 'global' CHECK (scope IN ('global', 'channel')),
+    name TEXT NOT NULL DEFAULT 'Agendamento Automático da IA',
+    mode VARCHAR(30) NOT NULL DEFAULT 'active_window' CHECK (mode IN ('active_window', 'paused_window')),
+    days_of_week INTEGER[] NOT NULL DEFAULT ARRAY[0,1,2,3,4,5,6],
+    start_time TEXT NOT NULL DEFAULT '18:00',
+    end_time TEXT NOT NULL DEFAULT '08:00',
+    timezone TEXT NOT NULL DEFAULT 'America/Sao_Paulo',
+    is_enabled BOOLEAN NOT NULL DEFAULT true,
+    last_slot_key TEXT,
+    last_applied_state BOOLEAN,
+    last_executed_at TIMESTAMPTZ,
+    created_by UUID,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_ai_schedules_scope_channel CHECK (
+        (scope = 'global' AND channel_id IS NULL) OR
+        (scope = 'channel' AND channel_id IS NOT NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_schedules_account ON public.ai_schedules(account_id);
+CREATE INDEX IF NOT EXISTS idx_ai_schedules_channel ON public.ai_schedules(channel_id);
+CREATE INDEX IF NOT EXISTS idx_ai_schedules_enabled ON public.ai_schedules(is_enabled);
 `;
 
 // =========================================================================
@@ -1361,5 +1392,287 @@ BEGIN
 END;
 $$;
 `;
+
+// =========================================================================
+// 17. SCRIPT COMPLETO: AGENDAMENTO AUTOMÁTICO DA IA (MULTI-EMPRESA + PG_CRON)
+// Seguro e idempotente para execução direta no SQL Editor do Supabase.
+// =========================================================================
+export const AI_SCHEDULING_SQL_SCRIPT = `-- =========================================================================
+-- AGENDAMENTO AUTOMÁTICO DA IA (CHATSAPP WEB AI)
+-- Suporta escopo Geral da Empresa (cerebro_ia + canais) e por Canal individual
+-- Fuso horário padrão: America/Sao_Paulo | Execução automática via pg_cron ou Backend
+-- =========================================================================
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- 1. Tabela de regras de agendamento
+CREATE TABLE IF NOT EXISTS public.ai_schedules (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    account_id UUID NOT NULL REFERENCES public.accounts(id) ON DELETE CASCADE,
+    channel_id UUID REFERENCES public.channels(id) ON DELETE CASCADE,
+    scope VARCHAR(20) NOT NULL DEFAULT 'global' CHECK (scope IN ('global', 'channel')),
+    name TEXT NOT NULL DEFAULT 'Agendamento Automático da IA',
+    mode VARCHAR(30) NOT NULL DEFAULT 'active_window' CHECK (mode IN ('active_window', 'paused_window')),
+    days_of_week INTEGER[] NOT NULL DEFAULT ARRAY[0,1,2,3,4,5,6], -- 0=Dom ... 6=Sáb
+    start_time TEXT NOT NULL DEFAULT '18:00', -- HH:MM
+    end_time TEXT NOT NULL DEFAULT '08:00',   -- HH:MM (suporta virada de madrugada)
+    timezone TEXT NOT NULL DEFAULT 'America/Sao_Paulo',
+    is_enabled BOOLEAN NOT NULL DEFAULT true,
+    last_slot_key TEXT,          -- Chave idempotente da última transição aplicada
+    last_applied_state BOOLEAN,  -- true = ativou IA | false = pausou IA
+    last_executed_at TIMESTAMPTZ,
+    created_by UUID,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT chk_ai_schedules_scope_channel CHECK (
+        (scope = 'global' AND channel_id IS NULL) OR
+        (scope = 'channel' AND channel_id IS NOT NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_schedules_account ON public.ai_schedules(account_id);
+CREATE INDEX IF NOT EXISTS idx_ai_schedules_channel ON public.ai_schedules(channel_id);
+CREATE INDEX IF NOT EXISTS idx_ai_schedules_enabled ON public.ai_schedules(is_enabled) WHERE is_enabled = true;
+
+-- 2. Row Level Security (Isolamento estrito multi-empresa)
+ALTER TABLE public.ai_schedules ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Multi-tenant: Acesso a ai_schedules da empresa" ON public.ai_schedules;
+CREATE POLICY "Multi-tenant: Acesso a ai_schedules da empresa"
+ON public.ai_schedules
+FOR ALL
+TO authenticated
+USING (
+    EXISTS (
+        SELECT 1 FROM public.account_users au
+        WHERE au.account_id = ai_schedules.account_id
+          AND au.user_id = auth.uid()
+    )
+)
+WITH CHECK (
+    EXISTS (
+        SELECT 1 FROM public.account_users au
+        WHERE au.account_id = ai_schedules.account_id
+          AND au.user_id = auth.uid()
+    )
+);
+
+-- 3. Publicação em Tempo Real (Supabase Realtime)
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_publication_tables
+            WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'ai_schedules'
+        ) THEN
+            ALTER PUBLICATION supabase_realtime ADD TABLE public.ai_schedules;
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_publication_tables
+            WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'cerebro_ia'
+        ) THEN
+            ALTER PUBLICATION supabase_realtime ADD TABLE public.cerebro_ia;
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_publication_tables
+            WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'channels'
+        ) THEN
+            ALTER PUBLICATION supabase_realtime ADD TABLE public.channels;
+        END IF;
+    END IF;
+END $$;
+
+-- 4. Motor Idempotente de Execução em Segundo Plano
+-- Avalia exclusivamente transições de borda (início/fim de janela) respeitando
+-- alterações manuais feitas pelo usuário entre um horário agendado e o próximo.
+CREATE OR REPLACE FUNCTION public.process_ai_schedules(p_now TIMESTAMPTZ DEFAULT NOW())
+RETURNS JSONB
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+    r RECORD;
+    v_tz TEXT;
+    v_local_now TIMESTAMP;
+    v_today_date DATE;
+    v_yesterday_date DATE;
+    v_today_dow INT;
+    v_yesterday_dow INT;
+    v_start_time TIME;
+    v_end_time TIME;
+    v_enter_state BOOLEAN;
+    v_exit_state BOOLEAN;
+    v_is_overnight BOOLEAN;
+    v_latest_ts TIMESTAMP;
+    v_latest_slot_key TEXT;
+    v_latest_target BOOLEAN;
+    v_any_channel_active BOOLEAN;
+    v_executed_count INT := 0;
+BEGIN
+    FOR r IN
+        SELECT *
+        FROM public.ai_schedules
+        WHERE is_enabled = true
+        ORDER BY CASE WHEN scope = 'global' THEN 0 ELSE 1 END, created_at ASC
+    LOOP
+        IF r.days_of_week IS NULL OR array_length(r.days_of_week, 1) IS NULL THEN
+            CONTINUE;
+        END IF;
+
+        BEGIN
+            v_tz := COALESCE(NULLIF(trim(r.timezone), ''), 'America/Sao_Paulo');
+            v_local_now := p_now AT TIME ZONE v_tz;
+            v_start_time := r.start_time::time;
+            v_end_time := r.end_time::time;
+        EXCEPTION WHEN OTHERS THEN
+            CONTINUE;
+        END;
+
+        IF v_start_time = v_end_time THEN
+            CONTINUE;
+        END IF;
+
+        v_today_date := v_local_now::date;
+        v_yesterday_date := v_today_date - 1;
+        v_today_dow := EXTRACT(DOW FROM v_today_date)::int;
+        v_yesterday_dow := EXTRACT(DOW FROM v_yesterday_date)::int;
+        v_enter_state := (r.mode = 'active_window');
+        v_exit_state := NOT v_enter_state;
+        v_is_overnight := (v_end_time < v_start_time);
+
+        WITH candidates AS (
+            -- Entrada de ontem
+            SELECT
+                (v_yesterday_date + v_start_time) AS ev_ts,
+                to_char(v_yesterday_date, 'YYYY-MM-DD') || '_' || to_char(v_start_time, 'HH24:MI') || '_enter' AS ev_key,
+                v_enter_state AS ev_target
+            WHERE v_yesterday_dow = ANY(r.days_of_week)
+
+            UNION ALL
+
+            -- Saída da janela de ontem (mesmo dia ou hoje se virar a madrugada)
+            SELECT
+                (CASE WHEN v_is_overnight THEN v_today_date ELSE v_yesterday_date END + v_end_time) AS ev_ts,
+                to_char(CASE WHEN v_is_overnight THEN v_today_date ELSE v_yesterday_date END, 'YYYY-MM-DD') || '_' || to_char(v_end_time, 'HH24:MI') || '_exit' AS ev_key,
+                v_exit_state AS ev_target
+            WHERE v_yesterday_dow = ANY(r.days_of_week)
+
+            UNION ALL
+
+            -- Entrada de hoje
+            SELECT
+                (v_today_date + v_start_time) AS ev_ts,
+                to_char(v_today_date, 'YYYY-MM-DD') || '_' || to_char(v_start_time, 'HH24:MI') || '_enter' AS ev_key,
+                v_enter_state AS ev_target
+            WHERE v_today_dow = ANY(r.days_of_week)
+
+            UNION ALL
+
+            -- Saída de hoje (apenas janela no mesmo dia)
+            SELECT
+                (v_today_date + v_end_time) AS ev_ts,
+                to_char(v_today_date, 'YYYY-MM-DD') || '_' || to_char(v_end_time, 'HH24:MI') || '_exit' AS ev_key,
+                v_exit_state AS ev_target
+            WHERE v_today_dow = ANY(r.days_of_week)
+              AND NOT v_is_overnight
+        )
+        SELECT ev_ts, ev_key, ev_target
+        INTO v_latest_ts, v_latest_slot_key, v_latest_target
+        FROM candidates
+        WHERE ev_ts <= v_local_now
+        ORDER BY ev_ts DESC
+        LIMIT 1;
+
+        IF v_latest_slot_key IS NULL THEN
+            CONTINUE;
+        END IF;
+
+        -- Só dispara se for um novo evento de borda nos últimos 360 min (6h de tolerância)
+        IF r.last_slot_key IS DISTINCT FROM v_latest_slot_key
+           AND (v_local_now - v_latest_ts) <= INTERVAL '6 hours' THEN
+
+            IF r.scope = 'global' THEN
+                -- Atualiza Status Geral da IA da empresa
+                UPDATE public.cerebro_ia
+                SET is_active = v_latest_target,
+                    updated_at = p_now
+                WHERE account_id = r.account_id;
+
+                -- Atualiza todos os canais da empresa que NÃO possuem agendamento individual ativo
+                UPDATE public.channels ch
+                SET config = jsonb_set(COALESCE(ch.config, '{}'::jsonb), '{ai_enabled}', to_jsonb(v_latest_target), true),
+                    updated_at = p_now
+                WHERE ch.account_id = r.account_id
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM public.ai_schedules cs
+                      WHERE cs.account_id = r.account_id
+                        AND cs.scope = 'channel'
+                        AND cs.channel_id = ch.id
+                        AND cs.is_enabled = true
+                  );
+
+            ELSIF r.scope = 'channel' AND r.channel_id IS NOT NULL THEN
+                -- Atualiza somente o canal alvo
+                UPDATE public.channels
+                SET config = jsonb_set(COALESCE(config, '{}'::jsonb), '{ai_enabled}', to_jsonb(v_latest_target), true),
+                    updated_at = p_now
+                WHERE id = r.channel_id
+                  AND account_id = r.account_id;
+
+                -- Mantém cerebro_ia.is_active coerente com o consolidado dos canais
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM public.channels
+                    WHERE account_id = r.account_id
+                      AND COALESCE((config->>'ai_enabled')::boolean, true) = true
+                ) INTO v_any_channel_active;
+
+                UPDATE public.cerebro_ia
+                SET is_active = v_any_channel_active,
+                    updated_at = p_now
+                WHERE account_id = r.account_id;
+            END IF;
+
+            UPDATE public.ai_schedules
+            SET last_slot_key = v_latest_slot_key,
+                last_applied_state = v_latest_target,
+                last_executed_at = p_now,
+                updated_at = p_now
+            WHERE id = r.id;
+
+            v_executed_count := v_executed_count + 1;
+        END IF;
+    END LOOP;
+
+    RETURN jsonb_build_object(
+        'success', true,
+        'executed_count', v_executed_count,
+        'processed_at', p_now
+    );
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.process_ai_schedules(TIMESTAMPTZ) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.process_ai_schedules(TIMESTAMPTZ) FROM anon;
+GRANT EXECUTE ON FUNCTION public.process_ai_schedules(TIMESTAMPTZ) TO service_role;
+
+-- 5. Ativar execução automática a cada minuto via pg_cron (se disponível no projeto)
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
+        IF EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'chatsapp-ai-schedules') THEN
+            PERFORM cron.unschedule('chatsapp-ai-schedules');
+        END IF;
+        PERFORM cron.schedule(
+            'chatsapp-ai-schedules',
+            '* * * * *',
+            'SELECT public.process_ai_schedules();'
+        );
+    END IF;
+END $$;
+`;
+
 
 

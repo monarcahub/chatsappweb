@@ -6,6 +6,8 @@ import { Readable } from 'stream';
 import { createServer as createViteServer } from 'vite';
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
+import { evaluateRuleSchedule } from './src/utils/aiScheduleUtils';
+import type { AIScheduleRule } from './src/types';
 
 dotenv.config();
 
@@ -1744,6 +1746,438 @@ app.post('/api/channels/toggle-ai', async (req, res) => {
 });
 
 // =========================================================================
+// AGENDAMENTO AUTOMÁTICO DA IA (CRUD MULTI-EMPRESA + MOTOR DE EXECUÇÃO)
+// =========================================================================
+function isMissingScheduleTableError(err: any): boolean {
+  const code = String(err?.code || '');
+  const msg = String(err?.message || '');
+  return (
+    code === '42P01' ||
+    code === 'PGRST205' ||
+    msg.includes('ai_schedules') && (msg.includes('does not exist') || msg.includes('schema cache'))
+  );
+}
+
+async function applyAIScheduleState(params: {
+  accountId: string;
+  scope: 'global' | 'channel';
+  channelId?: string | null;
+  targetState: boolean;
+}) {
+  if (!supabaseAdmin) return;
+  const nowIso = new Date().toISOString();
+
+  if (params.scope === 'global') {
+    await supabaseAdmin
+      .from('cerebro_ia')
+      .update({
+        is_active: params.targetState,
+        updated_at: nowIso,
+      })
+      .eq('account_id', params.accountId);
+
+    // Preserva canais que possuem agendamento individual ativo próprio
+    const { data: channelRules } = await supabaseAdmin
+      .from('ai_schedules')
+      .select('channel_id')
+      .eq('account_id', params.accountId)
+      .eq('scope', 'channel')
+      .eq('is_enabled', true);
+
+    const excludedChannelIds = new Set(
+      (channelRules || []).map((r: any) => r.channel_id).filter(Boolean)
+    );
+
+    const { data: accountChannels } = await supabaseAdmin
+      .from('channels')
+      .select('id, config')
+      .eq('account_id', params.accountId);
+
+    if (accountChannels && accountChannels.length > 0) {
+      for (const ch of accountChannels) {
+        if (excludedChannelIds.has(ch.id)) continue;
+        const nextConfig = { ...(ch.config || {}), ai_enabled: params.targetState };
+        await supabaseAdmin
+          .from('channels')
+          .update({
+            config: nextConfig,
+            updated_at: nowIso,
+          })
+          .eq('id', ch.id)
+          .eq('account_id', params.accountId);
+      }
+    }
+    return;
+  }
+
+  if (params.scope === 'channel' && params.channelId) {
+    const { data: channelRow } = await supabaseAdmin
+      .from('channels')
+      .select('id, config')
+      .eq('id', params.channelId)
+      .eq('account_id', params.accountId)
+      .maybeSingle();
+
+    if (channelRow) {
+      const nextConfig = { ...(channelRow.config || {}), ai_enabled: params.targetState };
+      await supabaseAdmin
+        .from('channels')
+        .update({
+          config: nextConfig,
+          updated_at: nowIso,
+        })
+        .eq('id', channelRow.id)
+        .eq('account_id', params.accountId);
+    }
+
+    const { data: allChannels } = await supabaseAdmin
+      .from('channels')
+      .select('id, config')
+      .eq('account_id', params.accountId);
+
+    if (allChannels && allChannels.length > 0) {
+      const hasAnyActive = allChannels.some((c: any) => c.config?.ai_enabled !== false);
+      await supabaseAdmin
+        .from('cerebro_ia')
+        .update({
+          is_active: hasAnyActive,
+          updated_at: nowIso,
+        })
+        .eq('account_id', params.accountId);
+    }
+  }
+}
+
+let isAIScheduleRunnerActive = false;
+
+async function runAISchedulesWorker(): Promise<{
+  success: boolean;
+  executedCount: number;
+  source: string;
+  skipped?: boolean;
+}> {
+  if (!supabaseAdmin || isAIScheduleRunnerActive) {
+    return { success: true, executedCount: 0, source: 'skipped_busy', skipped: true };
+  }
+
+  isAIScheduleRunnerActive = true;
+  try {
+    // 1. Tenta executar via RPC atômica no PostgreSQL (process_ai_schedules)
+    const { data: rpcData, error: rpcError } = await supabaseAdmin.rpc('process_ai_schedules');
+    if (!rpcError && rpcData) {
+      return {
+        success: true,
+        executedCount: Number(rpcData.executed_count || 0),
+        source: 'supabase_rpc',
+      };
+    }
+
+    // 2. Fallback TypeScript idempotente quando a RPC ainda não foi instalada no banco
+    const { data: rules, error: fetchErr } = await supabaseAdmin
+      .from('ai_schedules')
+      .select('*')
+      .eq('is_enabled', true)
+      .order('created_at', { ascending: true });
+
+    if (fetchErr) {
+      if (isMissingScheduleTableError(fetchErr)) {
+        return { success: true, executedCount: 0, source: 'table_not_created', skipped: true };
+      }
+      throw fetchErr;
+    }
+
+    const orderedRules = ((rules || []) as AIScheduleRule[]).sort((a, b) => {
+      if (a.scope === b.scope) return 0;
+      return a.scope === 'global' ? -1 : 1;
+    });
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    let executedCount = 0;
+
+    for (const rule of orderedRules) {
+      const evaluation = evaluateRuleSchedule(rule, now);
+      if (
+        !evaluation.latestEvent ||
+        !evaluation.isWithinCatchupWindow ||
+        rule.last_slot_key === evaluation.latestEvent.slotKey
+      ) {
+        continue;
+      }
+
+      const targetState = evaluation.latestEvent.targetState;
+      await applyAIScheduleState({
+        accountId: rule.account_id,
+        scope: rule.scope,
+        channelId: rule.channel_id,
+        targetState,
+      });
+
+      await supabaseAdmin
+        .from('ai_schedules')
+        .update({
+          last_slot_key: evaluation.latestEvent.slotKey,
+          last_applied_state: targetState,
+          last_executed_at: nowIso,
+          updated_at: nowIso,
+        })
+        .eq('id', rule.id)
+        .eq('account_id', rule.account_id);
+
+      executedCount++;
+    }
+
+    return { success: true, executedCount, source: 'node_worker' };
+  } catch (err: any) {
+    if (!isMissingScheduleTableError(err)) {
+      console.warn('Aviso no executor de agendamentos da IA:', err?.message || err);
+    }
+    return { success: false, executedCount: 0, source: 'error' };
+  } finally {
+    isAIScheduleRunnerActive = false;
+  }
+}
+
+app.get('/api/ai-schedules', async (req, res) => {
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'Supabase admin não configurado' });
+  }
+
+  const accountId = String(req.query.account_id || '').trim();
+  if (!accountId || accountId === 'all') {
+    return res.json({ schedules: [] });
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('ai_schedules')
+      .select('*')
+      .eq('account_id', accountId)
+      .order('scope', { ascending: true })
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      if (isMissingScheduleTableError(error)) {
+        return res.json({ schedules: [], tableMissing: true });
+      }
+      return res.status(400).json({ error: error.message });
+    }
+
+    return res.json({ schedules: data || [] });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Erro ao carregar agendamentos da IA' });
+  }
+});
+
+app.post('/api/ai-schedules', async (req, res) => {
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'Supabase admin não configurado' });
+  }
+
+  const {
+    id,
+    account_id,
+    channel_id,
+    scope,
+    name,
+    mode,
+    days_of_week,
+    start_time,
+    end_time,
+    timezone,
+    is_enabled,
+    apply_immediately,
+    created_by,
+  } = req.body || {};
+
+  if (!account_id || account_id === 'all') {
+    return res.status(400).json({ error: 'Selecione uma empresa específica (account_id)' });
+  }
+
+  const normalizedScope: 'global' | 'channel' = scope === 'channel' ? 'channel' : 'global';
+  if (normalizedScope === 'channel' && !channel_id) {
+    return res.status(400).json({ error: 'channel_id é obrigatório para agendamento por canal' });
+  }
+  if (!start_time || !end_time || start_time === end_time) {
+    return res.status(400).json({ error: 'Horário de início e término devem ser válidos e diferentes' });
+  }
+  if (!Array.isArray(days_of_week) || days_of_week.length === 0) {
+    return res.status(400).json({ error: 'Selecione ao menos um dia da semana' });
+  }
+
+  try {
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const normalizedMode = mode === 'paused_window' ? 'paused_window' : 'active_window';
+    const normalizedTimezone = String(timezone || 'America/Sao_Paulo').trim() || 'America/Sao_Paulo';
+    const enabled = is_enabled !== false;
+
+    const evaluation = evaluateRuleSchedule(
+      {
+        mode: normalizedMode,
+        days_of_week,
+        start_time,
+        end_time,
+        timezone: normalizedTimezone,
+      },
+      now
+    );
+
+    const payload: Record<string, any> = {
+      account_id,
+      channel_id: normalizedScope === 'channel' ? channel_id : null,
+      scope: normalizedScope,
+      name: String(name || 'Agendamento Automático da IA').trim(),
+      mode: normalizedMode,
+      days_of_week: days_of_week.map((d: any) => Number(d)).filter((d: number) => d >= 0 && d <= 6),
+      start_time: String(start_time).slice(0, 5),
+      end_time: String(end_time).slice(0, 5),
+      timezone: normalizedTimezone,
+      is_enabled: enabled,
+      updated_at: nowIso,
+    };
+
+    if (created_by) payload.created_by = created_by;
+
+    if (enabled && apply_immediately && evaluation.expectedStateNow !== null) {
+      payload.last_slot_key = evaluation.latestEvent?.slotKey || null;
+      payload.last_applied_state = evaluation.expectedStateNow;
+      payload.last_executed_at = nowIso;
+    } else if (evaluation.latestEvent) {
+      // Marca o slot atual como já processado para aguardar a próxima transição programada
+      payload.last_slot_key = evaluation.latestEvent.slotKey;
+    }
+
+    let savedRow: any = null;
+    if (id) {
+      const { data, error } = await supabaseAdmin
+        .from('ai_schedules')
+        .update(payload)
+        .eq('id', id)
+        .eq('account_id', account_id)
+        .select('*')
+        .single();
+      if (error) {
+        if (isMissingScheduleTableError(error)) {
+          return res.status(412).json({ error: 'Tabela ai_schedules não instalada no Supabase', tableMissing: true });
+        }
+        return res.status(400).json({ error: error.message });
+      }
+      savedRow = data;
+    } else {
+      const { data, error } = await supabaseAdmin
+        .from('ai_schedules')
+        .insert(payload)
+        .select('*')
+        .single();
+      if (error) {
+        if (isMissingScheduleTableError(error)) {
+          return res.status(412).json({ error: 'Tabela ai_schedules não instalada no Supabase', tableMissing: true });
+        }
+        return res.status(400).json({ error: error.message });
+      }
+      savedRow = data;
+    }
+
+    if (enabled && apply_immediately && evaluation.expectedStateNow !== null) {
+      await applyAIScheduleState({
+        accountId: account_id,
+        scope: normalizedScope,
+        channelId: normalizedScope === 'channel' ? channel_id : null,
+        targetState: evaluation.expectedStateNow,
+      });
+    }
+
+    return res.json({
+      success: true,
+      schedule: savedRow,
+      appliedState: enabled && apply_immediately ? evaluation.expectedStateNow : null,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Erro ao salvar agendamento da IA' });
+  }
+});
+
+app.patch('/api/ai-schedules/:id', async (req, res) => {
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'Supabase admin não configurado' });
+  }
+
+  const { id } = req.params;
+  const { account_id, is_enabled } = req.body || {};
+  if (!account_id) {
+    return res.status(400).json({ error: 'account_id é obrigatório' });
+  }
+
+  try {
+    const updateFields: Record<string, any> = {
+      updated_at: new Date().toISOString(),
+    };
+    if (typeof is_enabled === 'boolean') {
+      updateFields.is_enabled = is_enabled;
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('ai_schedules')
+      .update(updateFields)
+      .eq('id', id)
+      .eq('account_id', account_id)
+      .select('*')
+      .single();
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    return res.json({ success: true, schedule: data });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Erro ao atualizar agendamento' });
+  }
+});
+
+app.delete('/api/ai-schedules/:id', async (req, res) => {
+  if (!supabaseAdmin) {
+    return res.status(503).json({ error: 'Supabase admin não configurado' });
+  }
+
+  const { id } = req.params;
+  const accountId = String(req.query.account_id || req.body?.account_id || '').trim();
+  if (!accountId) {
+    return res.status(400).json({ error: 'account_id é obrigatório' });
+  }
+
+  try {
+    const { error } = await supabaseAdmin
+      .from('ai_schedules')
+      .delete()
+      .eq('id', id)
+      .eq('account_id', accountId);
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    return res.json({ success: true, id });
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Erro ao excluir agendamento' });
+  }
+});
+
+app.all(['/api/ai-schedules/run', '/api/cron/ai-schedules'], async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  if (cronSecret) {
+    const authHeader = String(req.headers.authorization || '');
+    const headerSecret = String(req.headers['x-cron-secret'] || '');
+    if (authHeader !== `Bearer ${cronSecret}` && headerSecret !== cronSecret) {
+      return res.status(401).json({ error: 'Não autorizado para executar cron' });
+    }
+  }
+
+  const result = await runAISchedulesWorker();
+  return res.status(result.success ? 200 : 500).json(result);
+});
+
+// =========================================================================
 // ROTA DE SUCESSO DO EMBEDDED SIGNUP (META WHATSAPP COEXISTÊNCIA)
 // Envia e sincroniza dados com https://webhook.monarcahub.com/webhook/whatsapp-setup
 // =========================================================================
@@ -2123,7 +2557,17 @@ async function startServer() {
     console.log(`ChatsApp Server running on port ${PORT}`);
   });
 
+  // Executa agendamentos automáticos da IA em segundo plano a cada 60 segundos
+  const scheduleStartupTimeout = setTimeout(() => {
+    runAISchedulesWorker().catch(() => {});
+  }, 8000);
+  const scheduleInterval = setInterval(() => {
+    runAISchedulesWorker().catch(() => {});
+  }, 60000);
+
   const gracefulShutdown = () => {
+    clearTimeout(scheduleStartupTimeout);
+    clearInterval(scheduleInterval);
     server.close(() => {
       process.exit(0);
     });

@@ -191,7 +191,7 @@ export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({
             </div>
 
             <p className={`text-[11px] mt-3 leading-relaxed ${darkMode ? 'text-[#8696a0]' : 'text-[#54656f]'}`}>
-              Se a franquia de 500 respostas da IA terminar antes dos 7 dias, o atendimento humano continua disponível. Após o período gratuito, escolha um plano para seguir operando com todo o histórico preservado.
+              Se a franquia de 500 respostas terminar nesse teste, o atendimento humano continua disponível. Escolha agora um plano para seguir operando com todo o histórico preservado e sem limite de respostas.
             </p>
           </div>
         )}

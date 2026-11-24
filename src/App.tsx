@@ -124,6 +124,72 @@ const AuthenticatedApp: React.FC<AuthenticatedAppProps> = ({
     localStorage.setItem('chatsapp_ai_global_active', String(newStatus));
   };
 
+  // Sincroniza Status Geral da IA com cerebro_ia e escuta alterações em tempo real (inclusive agendamentos automáticos)
+  useEffect(() => {
+    const accountId = currentAccount?.id;
+    if (!accountId || accountId === 'all') return;
+
+    let cancelled = false;
+    const syncGlobalAIStatus = async () => {
+      try {
+        await ensureSupabaseConfig();
+        if (isSupabaseConfigured) {
+          const { data, error } = await supabase
+            .from('cerebro_ia')
+            .select('is_active')
+            .eq('account_id', accountId)
+            .maybeSingle();
+
+          if (!error && data && typeof data.is_active === 'boolean' && !cancelled) {
+            setIsAIActiveGlobal(data.is_active);
+            localStorage.setItem('chatsapp_ai_global_active', String(data.is_active));
+            return;
+          }
+        }
+
+        const res = await fetch(`/api/ai-brain?account_id=${encodeURIComponent(accountId)}`);
+        if (res.ok) {
+          const json = await res.json();
+          if (typeof json?.config?.is_active === 'boolean' && !cancelled) {
+            setIsAIActiveGlobal(json.config.is_active);
+            localStorage.setItem('chatsapp_ai_global_active', String(json.config.is_active));
+          }
+        }
+      } catch (err) {
+        console.warn('Aviso ao sincronizar status global da IA:', err);
+      }
+    };
+
+    syncGlobalAIStatus();
+
+    if (!isSupabaseConfigured) return;
+
+    const brainSub = supabase
+      .channel(`cerebro-ia-status-${accountId}-${Date.now()}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'cerebro_ia',
+          filter: `account_id=eq.${accountId}`,
+        },
+        (payload: any) => {
+          const nextActive = payload?.new?.is_active;
+          if (typeof nextActive === 'boolean' && !cancelled) {
+            setIsAIActiveGlobal(nextActive);
+            localStorage.setItem('chatsapp_ai_global_active', String(nextActive));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      cancelled = true;
+      supabase.removeChannel(brainSub);
+    };
+  }, [currentAccount?.id]);
+
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [isAppLocked, setIsAppLocked] = useState(false);
   const [channelsCount, setChannelsCount] = useState<number | null>(null);

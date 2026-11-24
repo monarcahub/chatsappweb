@@ -30,12 +30,21 @@ import {
   Phone,
   Bot,
   Search,
+  Clock,
 } from 'lucide-react';
-import { ChannelType, Account, AccountSubscriptionStatus } from '../types';
+import {
+  ChannelType,
+  Account,
+  AccountSubscriptionStatus,
+  AIScheduleRule,
+  AIScheduleScope,
+} from '../types';
 import { useAuth } from '../context/AuthContext';
 import { useMetaWhatsAppSignup } from '../hooks/useMetaWhatsAppSignup';
 import { useEvolutionWhatsApp, sanitizeEvolutionInstanceName } from '../hooks/useEvolutionWhatsApp';
 import { EvolutionQRModal } from './EvolutionQRModal';
+import { AIScheduleModal } from './AIScheduleModal';
+import { evaluateRuleSchedule, formatScheduleSummary } from '../utils/aiScheduleUtils';
 import { TelegramIcon } from './TelegramIcon';
 import { BranchItem } from './AIBrainModal';
 import { supabase, isSupabaseConfigured, ensureSupabaseConfig } from '../lib/supabase';
@@ -176,6 +185,95 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
   // Pesquisa em tempo real e controle de expansão da lista compacta de canais
   const [channelSearchTerm, setChannelSearchTerm] = useState('');
   const [expandedChannelIds, setExpandedChannelIds] = useState<Record<string, boolean>>({});
+
+  // Agendamento automático da IA (Geral da Empresa e por Canal individual)
+  const [aiSchedules, setAiSchedules] = useState<AIScheduleRule[]>([]);
+  const [scheduleTableMissing, setScheduleTableMissing] = useState(false);
+  const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+  const [scheduleModalScope, setScheduleModalScope] = useState<AIScheduleScope>('global');
+  const [scheduleModalChannelId, setScheduleModalChannelId] = useState<string | null>(null);
+
+  const openScheduleModal = (scope: AIScheduleScope, channelId: string | null = null) => {
+    if (!currentAccount?.id || currentAccount.id === 'all') {
+      setSuccessToast('Selecione uma empresa específica no topo para configurar agendamentos da IA.');
+      return;
+    }
+    setScheduleModalScope(scope);
+    setScheduleModalChannelId(channelId);
+    setIsScheduleModalOpen(true);
+  };
+
+  const fetchAISchedules = useCallback(async () => {
+    const accountId = currentAccount?.id;
+    if (!accountId || accountId === 'all') {
+      setAiSchedules([]);
+      return;
+    }
+
+    try {
+      await ensureSupabaseConfig();
+      if (isSupabaseConfigured) {
+        const { data, error } = await supabase
+          .from('ai_schedules')
+          .select('*')
+          .eq('account_id', accountId)
+          .order('scope', { ascending: true })
+          .order('created_at', { ascending: true });
+
+        if (!error && Array.isArray(data)) {
+          setScheduleTableMissing(false);
+          setAiSchedules(data as AIScheduleRule[]);
+          return;
+        }
+        if (error && (error.code === '42P01' || error.code === 'PGRST205')) {
+          setScheduleTableMissing(true);
+          setAiSchedules([]);
+          return;
+        }
+      }
+
+      const res = await fetch(`/api/ai-schedules?account_id=${encodeURIComponent(accountId)}`);
+      if (res.ok) {
+        const json = await res.json();
+        setScheduleTableMissing(Boolean(json.tableMissing));
+        setAiSchedules(Array.isArray(json.schedules) ? json.schedules : []);
+      }
+    } catch (err) {
+      console.warn('Aviso ao carregar agendamentos da IA:', err);
+    }
+  }, [currentAccount?.id]);
+
+  useEffect(() => {
+    fetchAISchedules();
+
+    const accountId = currentAccount?.id;
+    if (!isSupabaseConfigured || !accountId || accountId === 'all') return;
+
+    const scheduleSub = supabase
+      .channel(`ai-schedules-realtime-${accountId}-${Date.now()}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'ai_schedules',
+          filter: `account_id=eq.${accountId}`,
+        },
+        () => {
+          fetchAISchedules();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(scheduleSub);
+    };
+  }, [fetchAISchedules, currentAccount?.id]);
+
+  const activeGlobalSchedules = useMemo(
+    () => aiSchedules.filter((s) => s.scope === 'global' && s.is_enabled),
+    [aiSchedules]
+  );
 
   const toggleChannelExpanded = (channelId: string) => {
     setExpandedChannelIds((prev) => ({
@@ -1224,25 +1322,88 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
               : 'Atendimento 100% HUMANO em todos os canais da empresa. Nenhuma mensagem automática será disparada enquanto estiver pausada.'}
           </p>
 
-          <button
-            type="button"
-            disabled={isTogglingGlobalAI}
-            onClick={() => handleToggleCompanyAIGlobal(!isAIActiveGlobal)}
-            className={`w-full py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs disabled:opacity-50 ${
-              isAIActiveGlobal
-                ? 'bg-amber-600/20 text-amber-300 border border-amber-500/40 hover:bg-amber-600 hover:text-white'
-                : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-900/30'
-            }`}
-          >
-            {isAIActiveGlobal ? <PowerOff className="w-3.5 h-3.5" /> : <Power className="w-3.5 h-3.5" />}
-            <span>
-              {isTogglingGlobalAI
-                ? 'Salvando no Supabase...'
-                : isAIActiveGlobal
-                ? 'Pausar IA Geral (Atendimento 100% Humano)'
-                : 'Ativar IA Geral em Todos os Canais'}
-            </span>
-          </button>
+          {/* Resumo de agendamento global ativo */}
+          {activeGlobalSchedules.length > 0 && (() => {
+            const primaryRule = activeGlobalSchedules[0];
+            const evalInfo = evaluateRuleSchedule(primaryRule);
+            const isManualOverride =
+              evalInfo.expectedStateNow !== null &&
+              isAIActiveGlobal !== evalInfo.expectedStateNow;
+
+            return (
+              <div
+                className={`mb-2.5 px-2.5 py-2 rounded-xl border text-[11px] leading-snug ${
+                  darkMode
+                    ? 'bg-[#111b21]/80 border-[#2a3942] text-[#aebac1]'
+                    : 'bg-white/80 border-gray-200 text-[#3b4a54]'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-[#00a884] flex items-center gap-1.5 truncate">
+                    <Clock className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">{formatScheduleSummary(primaryRule)}</span>
+                  </span>
+                  {activeGlobalSchedules.length > 1 && (
+                    <span className="text-[10px] text-[#8696a0] shrink-0 tabular-nums">
+                      +{activeGlobalSchedules.length - 1} regra
+                    </span>
+                  )}
+                </div>
+                {evalInfo.nextTransitionLabel && (
+                  <p className="text-[10px] text-[#8696a0] mt-0.5 tabular-nums">
+                    Próximo: {evalInfo.nextTransitionLabel} ({primaryRule.timezone})
+                  </p>
+                )}
+                {isManualOverride && (
+                  <p className="text-[10px] text-amber-500 font-medium mt-0.5">
+                    Alterado manualmente agora · Agendamento retoma no próximo horário
+                  </p>
+                )}
+              </div>
+            );
+          })()}
+
+          <div className="flex flex-col sm:flex-row gap-2">
+            <button
+              type="button"
+              disabled={isTogglingGlobalAI}
+              onClick={() => handleToggleCompanyAIGlobal(!isAIActiveGlobal)}
+              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs disabled:opacity-50 ${
+                isAIActiveGlobal
+                  ? 'bg-amber-600/20 text-amber-300 border border-amber-500/40 hover:bg-amber-600 hover:text-white'
+                  : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-900/30'
+              }`}
+            >
+              {isAIActiveGlobal ? <PowerOff className="w-3.5 h-3.5 shrink-0" /> : <Power className="w-3.5 h-3.5 shrink-0" />}
+              <span className="truncate">
+                {isTogglingGlobalAI
+                  ? 'Salvando no Supabase...'
+                  : isAIActiveGlobal
+                  ? 'Pausar IA Geral'
+                  : 'Ativar IA Geral'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => openScheduleModal('global', null)}
+              className={`py-2 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border transition-colors cursor-pointer shrink-0 whitespace-nowrap ${
+                activeGlobalSchedules.length > 0
+                  ? 'bg-[#00a884]/15 text-[#00a884] border-[#00a884]/35 hover:bg-[#00a884]/25'
+                  : darkMode
+                  ? 'bg-[#202c33] text-[#e9edef] border-[#313d45] hover:border-[#00a884]'
+                  : 'bg-white text-[#111b21] border-gray-300 hover:border-[#00a884]'
+              }`}
+              title="Configurar horários automáticos para ativar e pausar a IA da empresa"
+            >
+              <Clock className="w-3.5 h-3.5 text-[#00a884]" />
+              <span>
+                {activeGlobalSchedules.length > 0
+                  ? `Agendado (${activeGlobalSchedules.length})`
+                  : 'Agendar IA'}
+              </span>
+            </button>
+          </div>
         </div>
 
         <div
@@ -1396,6 +1557,10 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
             const isSelected = currentChannelFilter === channel.id || currentChannelFilter === channel.type;
             const isExpanded = Boolean(expandedChannelIds[channel.id]);
             const linkedBranch = availableBranches.find((b) => b.channel_id === channel.id);
+            const channelSchedules = aiSchedules.filter(
+              (s) => s.scope === 'channel' && s.channel_id === channel.id && s.is_enabled
+            );
+            const activeChannelSchedule = channelSchedules[0] || null;
 
             return (
               <div
@@ -1446,6 +1611,15 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                         />
                         {channel.status === 'online' ? 'Online' : 'Desconectado'}
                       </span>
+
+                      {activeChannelSchedule && (
+                        <span
+                          className="text-[#00a884] shrink-0 flex items-center"
+                          title={`Agendamento ativo: ${formatScheduleSummary(activeChannelSchedule)}`}
+                        >
+                          <Clock className="w-3.5 h-3.5" />
+                        </span>
+                      )}
                     </div>
                   </div>
 
@@ -1608,8 +1782,45 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                       </div>
                     )}
 
-                    <div className="mt-2.5 pt-2 border-t border-gray-700/20 flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5">
+                    {/* Resumo de agendamento individual do canal */}
+                    {activeChannelSchedule && (() => {
+                      const chEval = evaluateRuleSchedule(activeChannelSchedule);
+                      const chOverride =
+                        chEval.expectedStateNow !== null &&
+                        (channel.ai_enabled !== false) !== chEval.expectedStateNow;
+                      return (
+                        <div
+                          className={`mt-2.5 px-2.5 py-2 rounded-lg border text-[11px] flex items-center justify-between gap-2 ${
+                            darkMode
+                              ? 'bg-[#111b21]/80 border-[#2a3942] text-[#aebac1]'
+                              : 'bg-white border-gray-200 text-[#3b4a54]'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="font-semibold text-[#00a884] flex items-center gap-1 truncate">
+                              <Clock className="w-3 h-3 shrink-0" />
+                              <span className="truncate">{formatScheduleSummary(activeChannelSchedule)}</span>
+                            </div>
+                            {chEval.nextTransitionLabel && (
+                              <div className="text-[10px] text-[#8696a0] tabular-nums truncate">
+                                Próximo: {chEval.nextTransitionLabel}
+                                {chOverride ? ' · Alterado manualmente agora' : ''}
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => openScheduleModal('channel', channel.id)}
+                            className="text-[10px] font-semibold text-[#00a884] hover:underline shrink-0 cursor-pointer"
+                          >
+                            Configurar
+                          </button>
+                        </div>
+                      );
+                    })()}
+
+                    <div className="mt-2.5 pt-2 border-t border-gray-700/20 flex items-center justify-between gap-2 flex-wrap">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <button
                           type="button"
                           onClick={() => handleToggleChannelAI(channel.id, channel.ai_enabled !== false)}
@@ -1622,6 +1833,22 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
                         >
                           <Brain className="w-3 h-3" />
                           <span>{channel.ai_enabled !== false ? 'IA Ativa' : 'IA Pausada'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => openScheduleModal('channel', channel.id)}
+                          className={`px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 border transition-colors cursor-pointer ${
+                            activeChannelSchedule
+                              ? 'border-[#00a884]/40 bg-[#00a884]/10 text-[#00a884] hover:bg-[#00a884]/20'
+                              : darkMode
+                              ? 'border-[#313d45] hover:border-[#00a884] text-gray-300 hover:text-[#00a884] hover:bg-[#00a884]/10'
+                              : 'border-gray-200 hover:border-[#00a884] text-gray-700 hover:text-[#00a884] hover:bg-[#00a884]/10'
+                          }`}
+                          title="Agendar horários automáticos da IA para este canal"
+                        >
+                          <Clock className="w-3 h-3 text-[#00a884]" />
+                          <span>{activeChannelSchedule ? 'Agendado' : 'Agendar'}</span>
                         </button>
 
                         <button
@@ -3079,6 +3306,41 @@ export const ChannelsSidebar: React.FC<ChannelsSidebarProps> = ({
         onRefreshQr={refreshEvolutionQrCode}
         darkMode={darkMode}
       />
+
+      {/* Modal de Agendamento Automático da IA (Geral e por Canal) */}
+      {currentAccount?.id && currentAccount.id !== 'all' && (
+        <AIScheduleModal
+          isOpen={isScheduleModalOpen}
+          onClose={() => setIsScheduleModalOpen(false)}
+          darkMode={darkMode}
+          accountId={currentAccount.id}
+          accountName={currentAccount.name}
+          channels={channels.map((c) => ({
+            id: c.id,
+            name: c.name,
+            type: c.type,
+            ai_enabled: c.ai_enabled,
+          }))}
+          schedules={aiSchedules}
+          initialScope={scheduleModalScope}
+          initialChannelId={scheduleModalChannelId}
+          tableMissing={scheduleTableMissing}
+          currentGlobalAIActive={isAIActiveGlobal}
+          onSchedulesChanged={fetchAISchedules}
+          onAIStateChanged={({ scope, channelId, newState }) => {
+            if (scope === 'global') {
+              onToggleAIGlobal?.(newState);
+              fetchChannels();
+            } else if (scope === 'channel' && channelId) {
+              setChannels((prev) =>
+                prev.map((c) => (c.id === channelId ? { ...c, ai_enabled: newState } : c))
+              );
+              fetchChannels();
+            }
+          }}
+          onToast={(msg) => setSuccessToast(msg)}
+        />
+      )}
     </div>
   );
 };

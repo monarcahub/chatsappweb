@@ -26,6 +26,115 @@ import {
 
 const ARCHIVED_STORAGE_KEY = 'chatsapp_archived_conv_ids';
 const TAGS_STORAGE_KEY = 'chatsapp_custom_tags_v1';
+const REALTIME_HEALTHY_POLL_MS = 60_000;
+const REALTIME_CONTINGENCY_POLL_MS = 10_000;
+
+type RealtimeConnectionState = 'CONNECTING' | 'SUBSCRIBED' | 'CHANNEL_ERROR' | 'TIMED_OUT' | 'CLOSED';
+
+interface LoadSupabaseDataOptions {
+  queueIfBusy?: boolean;
+  skipMessagesForConvId?: string | null;
+  syncSelectedMessages?: boolean;
+}
+
+interface LoadMessagesOptions {
+  queueIfBusy?: boolean;
+}
+
+const areStringArraysEqual = (a?: string[], b?: string[]): boolean => {
+  const arrA = a || [];
+  const arrB = b || [];
+  if (arrA.length !== arrB.length) return false;
+  for (let i = 0; i < arrA.length; i++) {
+    if (arrA[i] !== arrB[i]) return false;
+  }
+  return true;
+};
+
+const areContactTagsEqual = (a?: Tag[], b?: Tag[]): boolean => {
+  const arrA = a || [];
+  const arrB = b || [];
+  if (arrA.length !== arrB.length) return false;
+  for (let i = 0; i < arrA.length; i++) {
+    if (
+      arrA[i].id !== arrB[i].id ||
+      arrA[i].name !== arrB[i].name ||
+      arrA[i].color !== arrB[i].color ||
+      arrA[i].textColor !== arrB[i].textColor
+    ) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const areCrmNotesEqual = (
+  a?: Array<{ id: string; text: string; createdAt: string; author: string }>,
+  b?: Array<{ id: string; text: string; createdAt: string; author: string }>
+): boolean => {
+  const arrA = a || [];
+  const arrB = b || [];
+  if (arrA.length !== arrB.length) return false;
+  for (let i = 0; i < arrA.length; i++) {
+    if (
+      arrA[i].id !== arrB[i].id ||
+      arrA[i].text !== arrB[i].text ||
+      arrA[i].createdAt !== arrB[i].createdAt ||
+      arrA[i].author !== arrB[i].author
+    ) {
+      return false;
+    }
+  }
+  return true;
+};
+
+const areConversationsListsEqual = (prevList: Conversation[], nextList: Conversation[]): boolean => {
+  if (prevList.length !== nextList.length) return false;
+  for (let i = 0; i < prevList.length; i++) {
+    const a = prevList[i];
+    const b = nextList[i];
+    if (
+      a.id !== b.id ||
+      a.accountId !== b.accountId ||
+      a.contactId !== b.contactId ||
+      a.channelId !== b.channelId ||
+      a.status !== b.status ||
+      a.crmStage !== b.crmStage ||
+      a.notes !== b.notes ||
+      a.unreadCount !== b.unreadCount ||
+      Boolean(a.isPinned) !== Boolean(b.isPinned) ||
+      Boolean(a.isArchived) !== Boolean(b.isArchived) ||
+      Boolean(a.isFavorite) !== Boolean(b.isFavorite) ||
+      Boolean(a.isMuted) !== Boolean(b.isMuted) ||
+      Boolean(a.isGroup) !== Boolean(b.isGroup) ||
+      a.updatedAt !== b.updatedAt ||
+      !areStringArraysEqual(a.tags, b.tags) ||
+      a.lastMessage?.text !== b.lastMessage?.text ||
+      a.lastMessage?.timestamp !== b.lastMessage?.timestamp ||
+      a.lastMessage?.senderType !== b.lastMessage?.senderType ||
+      a.lastMessage?.status !== b.lastMessage?.status ||
+      a.lastMessage?.contentType !== b.lastMessage?.contentType ||
+      a.lastMessage?.mediaDuration !== b.lastMessage?.mediaDuration ||
+      a.contact?.id !== b.contact?.id ||
+      a.contact?.name !== b.contact?.name ||
+      a.contact?.phone !== b.contact?.phone ||
+      a.contact?.email !== b.contact?.email ||
+      a.contact?.instagramUsername !== b.contact?.instagramUsername ||
+      a.contact?.avatarUrl !== b.contact?.avatarUrl ||
+      a.contact?.channel !== b.contact?.channel ||
+      a.contact?.channelId !== b.contact?.channelId ||
+      Boolean(a.contact?.coexistenceEnabled) !== Boolean(b.contact?.coexistenceEnabled) ||
+      a.contact?.aiStatus !== b.contact?.aiStatus ||
+      a.contact?.crm?.dealStage !== b.contact?.crm?.dealStage ||
+      a.contact?.crm?.assignedAgent !== b.contact?.crm?.assignedAgent ||
+      !areCrmNotesEqual(a.contact?.crm?.notes, b.contact?.crm?.notes) ||
+      !areContactTagsEqual(a.contact?.tags, b.contact?.tags)
+    ) {
+      return false;
+    }
+  }
+  return true;
+};
 
 const getStoredArchivedIds = (): Set<string> => {
   if (typeof window === 'undefined') return new Set();
@@ -96,11 +205,36 @@ export function useSupabaseChat(
   const [realtimeLatencyMs, setRealtimeLatencyMs] = useState<number | null>(null);
 
   // Lista de IDs de contas autorizadas para este usuário logado (exclui opção 'all')
+  const rawAllowedAccountIdsKey = (availableAccounts || [])
+    .map((a) => a.id)
+    .filter((id) => Boolean(id) && id !== 'all')
+    .join(',');
+
   const allowedAccountIds = useMemo(() => {
-    return (availableAccounts || [])
-      .map((a) => a.id)
-      .filter((id) => Boolean(id) && id !== 'all');
-  }, [availableAccounts]);
+    return rawAllowedAccountIdsKey ? rawAllowedAccountIdsKey.split(',') : [];
+  }, [rawAllowedAccountIdsKey]);
+
+  const allowedAccountIdsRef = useRef<string[]>(allowedAccountIds);
+  allowedAccountIdsRef.current = allowedAccountIds;
+
+  // Controle de época por contexto de conta para descartar respostas assíncronas obsoletas
+  const contextKey = `${currentAccountId}::${rawAllowedAccountIdsKey}`;
+  const accountEpochRef = useRef<number>(0);
+  const prevContextKeyRef = useRef<string>(contextKey);
+  if (prevContextKeyRef.current !== contextKey) {
+    prevContextKeyRef.current = contextKey;
+    accountEpochRef.current += 1;
+  }
+
+  // Controle de concorrência e coalescência de ressincronizações pendentes
+  const convSyncInFlightRef = useRef<{ epoch: number; promise: Promise<void> } | null>(null);
+  const convSyncPendingRef = useRef<{ epoch: number; syncSelectedMessages: boolean } | null>(null);
+  const msgSyncInFlightRef = useRef<Map<string, Promise<void>>>(new Map());
+  const msgSyncPendingRef = useRef<Set<string>>(new Set());
+
+  // Estado real da conexão Realtime para polling adaptativo
+  const realtimeStatusRef = useRef<RealtimeConnectionState>('CONNECTING');
+  const wasRealtimeDegradedRef = useRef<boolean>(false);
 
   // URL Oficial do Webhook de Saída (n8n com responseNode que devolve o wamid)
   const OUTGOING_WEBHOOK_URL = 'https://webhook.monarcahub.com/webhook/chatsapp_saidas';
@@ -108,8 +242,17 @@ export function useSupabaseChat(
   // Rastreia se a seleção inicial de conversa já foi executada para a conta atual
   const hasInitializedSelectionRef = useRef<boolean>(false);
 
+  // Invalida respostas pendentes ao desmontar o hook
+  useEffect(() => {
+    return () => {
+      accountEpochRef.current += 1;
+    };
+  }, []);
+
   // Troca imediata de conversas ao alternar a empresa ativa
   useEffect(() => {
+    convSyncPendingRef.current = null;
+    msgSyncPendingRef.current.clear();
     setConversations([]);
     setSelectedId(null);
     hasInitializedSelectionRef.current = false;
@@ -265,55 +408,96 @@ export function useSupabaseChat(
   }, []);
 
   // Busca ATIVA das mensagens de uma conversa específica diretamente na tabela 'messages'
+  const loadMessagesRef = useRef<
+    ((convId: string, options?: LoadMessagesOptions) => Promise<void>) | null
+  >(null);
+
   const loadMessagesForConversation = useCallback(
-    async (convId: string) => {
+    async (convId: string, options?: LoadMessagesOptions) => {
       if (!convId) return;
 
-      try {
-        await ensureSupabaseConfig();
-        if (!isSupabaseConfigured) return;
+      const myEpoch = accountEpochRef.current;
+      const syncKey = `${myEpoch}:${convId}`;
+      const existingInFlight = msgSyncInFlightRef.current.get(syncKey);
 
-        const { data, error } = await supabase
-          .from('messages')
-          .select('*')
-          .eq('conversation_id', convId)
-          .order('created_at', { ascending: true });
-
-        if (!error && data) {
-          const formatted: Message[] = (data as any[]).map(formatDatabaseMessage);
-          setMessages((prev) => {
-            const currentList = prev[convId] || [];
-            // Compara tamanho, IDs, status e conteúdo para refletir atualizações ('sent' -> 'delivered' -> 'read')
-            const hasChanges =
-              currentList.length !== formatted.length ||
-              currentList.some((curr, idx) => {
-                const next = formatted[idx];
-                return (
-                  !next ||
-                  curr.id !== next.id ||
-                  curr.status !== next.status ||
-                  curr.content !== next.content ||
-                  curr.reaction !== next.reaction ||
-                  Boolean(curr.isStarred) !== Boolean(next.isStarred)
-                );
-              });
-            if (!hasChanges) {
-              return prev;
-            }
-            return {
-              ...prev,
-              [convId]: formatted,
-            };
-          });
-        } else if (error) {
-          console.warn(`[Supabase] Erro ao carregar mensagens da conversa ${convId}:`, error.message);
+      if (existingInFlight) {
+        if (options?.queueIfBusy) {
+          msgSyncPendingRef.current.add(syncKey);
         }
-      } catch (err) {
-        console.error('[Supabase] Falha na consulta da tabela messages:', err);
+        return existingInFlight;
       }
+
+      const runPromise = (async () => {
+        try {
+          await ensureSupabaseConfig();
+          if (myEpoch !== accountEpochRef.current || !isSupabaseConfigured) return;
+
+          const { data, error } = await supabase
+            .from('messages')
+            .select('*')
+            .eq('conversation_id', convId)
+            .order('created_at', { ascending: true });
+
+          if (myEpoch !== accountEpochRef.current) return;
+
+          if (!error && data) {
+            const formatted: Message[] = (data as any[]).map(formatDatabaseMessage);
+            setMessages((prev) => {
+              const currentList = prev[convId] || [];
+              // Compara tamanho, IDs, status, mídia e conteúdo para refletir atualizações ('sent' -> 'delivered' -> 'read')
+              const hasChanges =
+                currentList.length !== formatted.length ||
+                currentList.some((curr, idx) => {
+                  const next = formatted[idx];
+                  return (
+                    !next ||
+                    curr.id !== next.id ||
+                    curr.status !== next.status ||
+                    curr.content !== next.content ||
+                    curr.senderType !== next.senderType ||
+                    curr.contentType !== next.contentType ||
+                    curr.mediaUrl !== next.mediaUrl ||
+                    curr.mediaDuration !== next.mediaDuration ||
+                    curr.senderName !== next.senderName ||
+                    curr.timestamp !== next.timestamp ||
+                    curr.reaction !== next.reaction ||
+                    Boolean(curr.isStarred) !== Boolean(next.isStarred) ||
+                    curr.metadata?.wamid !== next.metadata?.wamid
+                  );
+                });
+              if (!hasChanges) {
+                return prev;
+              }
+              return {
+                ...prev,
+                [convId]: formatted,
+              };
+            });
+          } else if (error) {
+            console.warn(`[Supabase] Erro ao carregar mensagens da conversa ${convId}:`, error.message);
+          }
+        } catch (err) {
+          console.error('[Supabase] Falha na consulta da tabela messages:', err);
+        } finally {
+          if (msgSyncInFlightRef.current.get(syncKey) === runPromise) {
+            msgSyncInFlightRef.current.delete(syncKey);
+          }
+          if (msgSyncPendingRef.current.has(syncKey)) {
+            msgSyncPendingRef.current.delete(syncKey);
+            if (myEpoch === accountEpochRef.current && selectedIdRef.current === convId) {
+              void loadMessagesRef.current?.(convId, { queueIfBusy: false });
+            }
+          }
+        }
+      })();
+
+      msgSyncInFlightRef.current.set(syncKey, runPromise);
+      return runPromise;
     },
     [formatDatabaseMessage]
   );
+
+  loadMessagesRef.current = loadMessagesForConversation;
 
   // Monitora mudança na conversa selecionada para puxar o histórico da tabela 'messages'
   useEffect(() => {
@@ -323,19 +507,45 @@ export function useSupabaseChat(
   }, [selectedId, loadMessagesForConversation]);
 
   // Carregar dados reais do Supabase filtrados ESTRITAMENTE pela conta ativa do usuário
-  const loadSupabaseData = useCallback(async () => {
-    await ensureSupabaseConfig();
-    if (!isSupabaseConfigured) return;
+  const loadSupabaseDataRef = useRef<
+    ((options?: LoadSupabaseDataOptions) => Promise<void>) | null
+  >(null);
 
-    // Se o usuário não tiver conta ativa vinculada, limpa e retorna
-    if (!currentAccountId || currentAccountId === '') {
-      setConversations([]);
-      setMessages({});
-      setSelectedId(null);
-      return;
-    }
+  const loadSupabaseData = useCallback(
+    async (options?: LoadSupabaseDataOptions) => {
+      const myEpoch = accountEpochRef.current;
+      const myAccountId = currentAccountId;
+      const myAllowedAccountIds = allowedAccountIdsRef.current;
+      const queueIfBusy = options?.queueIfBusy ?? true;
+      const shouldSyncMessages = options?.syncSelectedMessages ?? false;
 
-    try {
+      if (convSyncInFlightRef.current && convSyncInFlightRef.current.epoch === myEpoch) {
+        if (queueIfBusy) {
+          const prevPending = convSyncPendingRef.current;
+          convSyncPendingRef.current = {
+            epoch: myEpoch,
+            syncSelectedMessages:
+              Boolean(prevPending?.epoch === myEpoch && prevPending.syncSelectedMessages) ||
+              shouldSyncMessages,
+          };
+        }
+        return convSyncInFlightRef.current.promise;
+      }
+
+      const runPromise = (async () => {
+        try {
+          await ensureSupabaseConfig();
+          if (myEpoch !== accountEpochRef.current || !isSupabaseConfigured) return;
+
+          // Se o usuário não tiver conta ativa vinculada, limpa e retorna
+          if (!myAccountId || myAccountId === '') {
+            setConversations((prev) => (prev.length === 0 ? prev : []));
+            setMessages((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+            if (selectedIdRef.current !== null) {
+              setSelectedId(null);
+            }
+            return;
+          }
       // 1. Carregar conversas com contatos isoladas estritamente pelas contas autorizadas do usuário
       let query = supabase
         .from('conversations')
@@ -368,19 +578,22 @@ export function useSupabaseChat(
         `)
         .order('last_message_at', { ascending: false });
 
-      if (currentAccountId === 'all') {
+      if (myAccountId === 'all') {
         // Se consolidado, filtra APENAS pelas contas vinculadas a este usuário (nunca pelo banco inteiro)
-        if (allowedAccountIds.length === 0) {
-          setConversations([]);
-          setSelectedId(null);
+        if (myAllowedAccountIds.length === 0) {
+          setConversations((prev) => (prev.length === 0 ? prev : []));
+          if (selectedIdRef.current !== null) {
+            setSelectedId(null);
+          }
           return;
         }
-        query = query.in('account_id', allowedAccountIds);
+        query = query.in('account_id', myAllowedAccountIds);
       } else {
-        query = query.eq('account_id', currentAccountId);
+        query = query.eq('account_id', myAccountId);
       }
 
       const { data: convsData, error: convsErr } = await query;
+      if (myEpoch !== accountEpochRef.current) return;
 
       if (convsErr) {
         console.warn('Erro ao buscar conversas no Supabase:', convsErr.message);
@@ -396,15 +609,16 @@ export function useSupabaseChat(
           .order('created_at', { ascending: false })
           .limit(300);
 
-        if (currentAccountId === 'all') {
-          if (allowedAccountIds.length > 0) {
-            msgsQuery = msgsQuery.in('account_id', allowedAccountIds);
+        if (myAccountId === 'all') {
+          if (myAllowedAccountIds.length > 0) {
+            msgsQuery = msgsQuery.in('account_id', myAllowedAccountIds);
           }
         } else {
-          msgsQuery = msgsQuery.eq('account_id', currentAccountId);
+          msgsQuery = msgsQuery.eq('account_id', myAccountId);
         }
 
         const { data: latestMsgs } = await msgsQuery;
+        if (myEpoch !== accountEpochRef.current) return;
 
         if (latestMsgs) {
           for (const m of latestMsgs) {
@@ -427,6 +641,7 @@ export function useSupabaseChat(
         const { data: allChannels } = await supabase
           .from('channels')
           .select('id, name, type');
+        if (myEpoch !== accountEpochRef.current) return;
         if (allChannels) {
           for (const ch of allChannels) {
             channelsMap.set(ch.id, ch);
@@ -436,9 +651,15 @@ export function useSupabaseChat(
         console.warn('Não foi possível pré-carregar canais para mapeamento:', err);
       }
 
+      if (myEpoch !== accountEpochRef.current) return;
+
       if (convsData) {
         const storedArchivedIds = getStoredArchivedIds();
         if (convsData.length > 0) {
+          const prevConvsMap = new Map<string, Conversation>(
+            conversationsRef.current.map((c) => [c.id, c])
+          );
+
           const formattedConvs: Conversation[] = convsData.map((row: any) => {
             const contact = row.contacts || {};
             const chFromJoin = row.channels || {};
@@ -525,6 +746,8 @@ export function useSupabaseChat(
               rawText
             );
 
+            const prevConv = prevConvsMap.get(row.id);
+
             return {
               id: row.id,
               contactId: contact.id,
@@ -549,7 +772,7 @@ export function useSupabaseChat(
                   assignedAgent: 'Atendente Atual',
                   notes: row.notes ? [{ id: '1', text: row.notes, createdAt: formatSaoPauloDate(row.last_message_at), author: 'Sistema' }] : [],
                 },
-                tags: (row.tags || []).map((t: string, i: number) => {
+                tags: (row.tags || []).map((t: string) => {
                   const existing = allTagsRef.current.find(
                     (at) => at.name.toLowerCase() === t.toLowerCase()
                   );
@@ -575,11 +798,17 @@ export function useSupabaseChat(
               isArchived: storedArchivedIds.has(row.id),
               isFavorite: false,
               isGroup: false,
-              updatedAt: row.last_message_at || new Date().toISOString(),
+              updatedAt:
+                row.last_message_at ||
+                prevConv?.updatedAt ||
+                latestMsg?.created_at ||
+                new Date().toISOString(),
             };
           });
 
-          setConversations(formattedConvs);
+          setConversations((prev) =>
+            areConversationsListsEqual(prev, formattedConvs) ? prev : formattedConvs
+          );
 
           // Detecta se a viewport atual é dispositivo móvel (< 768px)
           const isMobileViewport = typeof window !== 'undefined' ? window.innerWidth < 768 : false;
@@ -605,39 +834,133 @@ export function useSupabaseChat(
             setSelectedId(targetActiveId);
           }
 
-          if (targetActiveId) {
-            loadMessagesForConversation(targetActiveId);
+          if (targetActiveId && targetActiveId !== options?.skipMessagesForConvId) {
+            void loadMessagesForConversation(targetActiveId, {
+              queueIfBusy: shouldSyncMessages,
+            });
           }
         } else {
-          setConversations([]);
+          setConversations((prev) => (prev.length === 0 ? prev : []));
           if (selectedIdRef.current !== null) {
             setSelectedId(null);
           }
         }
-        setIsConnectedToSupabase(true);
+        setIsConnectedToSupabase((prev) => (prev ? prev : true));
       }
-    } catch (err) {
-      console.warn('Falha na inicialização do Supabase:', err);
-    }
-  }, [currentAccountId, loadMessagesForConversation]);
-
-  // Inicializar e configurar Supabase Realtime para mensagens e conversas + Polling Ativo
-  useEffect(() => {
-    loadSupabaseData();
-
-    if (!isSupabaseConfigured || !currentAccountId) return;
-
-    // 1. Polling de sincronização automática a cada 3.5 segundos:
-    // Garante que mesmo em caso de perda temporária de WebSocket ou ausência de replicação,
-    // novas mensagens e conversas chegam automaticamente sem precisar dar F5 / refresh na tela.
-    const pollInterval = setInterval(() => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
-        loadSupabaseData();
-        if (selectedIdRef.current) {
-          loadMessagesForConversation(selectedIdRef.current);
+        } catch (err) {
+          console.warn('Falha na inicialização do Supabase:', err);
+        } finally {
+          if (convSyncInFlightRef.current?.promise === runPromise) {
+            convSyncInFlightRef.current = null;
+          }
+          const pending = convSyncPendingRef.current;
+          if (pending && pending.epoch === myEpoch && myEpoch === accountEpochRef.current) {
+            convSyncPendingRef.current = null;
+            const activeConvId = pending.syncSelectedMessages ? selectedIdRef.current : null;
+            void loadSupabaseDataRef.current?.({
+              queueIfBusy: false,
+              skipMessagesForConvId: activeConvId,
+              syncSelectedMessages: pending.syncSelectedMessages,
+            });
+            if (activeConvId) {
+              void loadMessagesForConversation(activeConvId, { queueIfBusy: true });
+            }
+          }
         }
+      })();
+
+      convSyncInFlightRef.current = { epoch: myEpoch, promise: runPromise };
+      return runPromise;
+    },
+    [currentAccountId, rawAllowedAccountIdsKey, loadMessagesForConversation]
+  );
+
+  loadSupabaseDataRef.current = loadSupabaseData;
+
+  // Inicializar e configurar Supabase Realtime para mensagens e conversas + Polling Adaptativo
+  useEffect(() => {
+    const myEpoch = accountEpochRef.current;
+    let isDisposed = false;
+    let pollTimeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    realtimeStatusRef.current = 'CONNECTING';
+    wasRealtimeDegradedRef.current = false;
+
+    const clearScheduledPoll = () => {
+      if (pollTimeoutId !== null) {
+        clearTimeout(pollTimeoutId);
+        pollTimeoutId = null;
       }
-    }, 3500);
+    };
+
+    const runControlledSync = async (params: { queueIfBusy: boolean }) => {
+      if (isDisposed || myEpoch !== accountEpochRef.current) return;
+      const activeConvId = selectedIdRef.current;
+      const tasks: Array<Promise<void>> = [
+        loadSupabaseData({
+          queueIfBusy: params.queueIfBusy,
+          skipMessagesForConvId: activeConvId,
+          syncSelectedMessages: Boolean(activeConvId && params.queueIfBusy),
+        }),
+      ];
+      if (activeConvId) {
+        tasks.push(
+          loadMessagesForConversation(activeConvId, {
+            queueIfBusy: params.queueIfBusy,
+          })
+        );
+      }
+      await Promise.all(tasks);
+    };
+
+    const scheduleNextPoll = () => {
+      clearScheduledPoll();
+      if (isDisposed || myEpoch !== accountEpochRef.current) return;
+      if (!isSupabaseConfigured || !currentAccountId) return;
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return;
+      }
+
+      const delayMs =
+        realtimeStatusRef.current === 'SUBSCRIBED'
+          ? REALTIME_HEALTHY_POLL_MS
+          : REALTIME_CONTINGENCY_POLL_MS;
+
+      pollTimeoutId = setTimeout(async () => {
+        pollTimeoutId = null;
+        if (isDisposed || myEpoch !== accountEpochRef.current) return;
+        if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+          await runControlledSync({ queueIfBusy: false });
+        }
+        scheduleNextPoll();
+      }, delayMs);
+    };
+
+    // Carga inicial ao montar / trocar de empresa
+    void loadSupabaseData({ queueIfBusy: false });
+
+    if (!isSupabaseConfigured || !currentAccountId) {
+      return () => {
+        isDisposed = true;
+        clearScheduledPoll();
+      };
+    }
+
+    const handleVisibilityChange = () => {
+      if (isDisposed || myEpoch !== accountEpochRef.current) return;
+      if (document.visibilityState === 'hidden') {
+        clearScheduledPoll();
+      } else if (document.visibilityState === 'visible') {
+        void runControlledSync({ queueIfBusy: true });
+        scheduleNextPoll();
+      }
+    };
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+    }
+
+    scheduleNextPoll();
 
     const startTime = performance.now();
     const channel = supabase
@@ -650,8 +973,9 @@ export function useSupabaseChat(
           table: 'conversations',
         },
         () => {
-          // Nova conversa iniciada (ex: novo contato chamou): recarrega lista imediatamente
-          loadSupabaseData();
+          if (isDisposed || myEpoch !== accountEpochRef.current) return;
+          // Nova conversa iniciada (ex: novo contato chamou): recarrega lista com controle de concorrência
+          void loadSupabaseData({ queueIfBusy: true });
         }
       )
       .on(
@@ -662,6 +986,7 @@ export function useSupabaseChat(
           table: 'messages',
         },
         (payload) => {
+          if (isDisposed || myEpoch !== accountEpochRef.current) return;
           const latency = Math.round(performance.now() - startTime);
           setRealtimeLatencyMs(latency < 100 ? latency : Math.floor(Math.random() * 40) + 45);
           const newMsg = payload.new as any;
@@ -671,7 +996,9 @@ export function useSupabaseChat(
           // Se a conversa ainda não constar na lista lateral (novo contato), força recarga das conversas
           const belongsToActiveConvs = conversationsRef.current.some((c) => c.id === convId);
           if (!belongsToActiveConvs) {
-            loadSupabaseData();
+            if (!isDisposed && myEpoch === accountEpochRef.current) {
+              void loadSupabaseData({ queueIfBusy: true });
+            }
             return;
           }
 
@@ -838,6 +1165,7 @@ export function useSupabaseChat(
           table: 'messages',
         },
         (payload) => {
+          if (isDisposed || myEpoch !== accountEpochRef.current) return;
           const updatedMsg = payload.new as any;
           const convId = updatedMsg.conversation_id;
           if (!convId) return;
@@ -892,12 +1220,16 @@ export function useSupabaseChat(
         { event: 'UPDATE', schema: 'public', table: 'conversations' },
         (payload) => {
           const updated = payload.new as any;
-          if (!updated?.id) return;
+          if (!updated?.id || isDisposed || myEpoch !== accountEpochRef.current) return;
+
+          const exists = conversationsRef.current.some((c) => c.id === updated.id);
+          if (!exists) {
+            void loadSupabaseData({ queueIfBusy: true });
+            return;
+          }
 
           setConversations((prev) => {
-            const exists = prev.some((c) => c.id === updated.id);
-            if (!exists) {
-              loadSupabaseData();
+            if (!prev.some((c) => c.id === updated.id)) {
               return prev;
             }
 
@@ -962,16 +1294,34 @@ export function useSupabaseChat(
         }
       )
       .subscribe((status) => {
+        if (isDisposed || myEpoch !== accountEpochRef.current) return;
+
         if (status === 'SUBSCRIBED') {
-          setIsConnectedToSupabase(true);
+          const wasDegraded = wasRealtimeDegradedRef.current;
+          wasRealtimeDegradedRef.current = false;
+          realtimeStatusRef.current = 'SUBSCRIBED';
+          setIsConnectedToSupabase((prev) => (prev ? prev : true));
+
+          if (wasDegraded) {
+            void runControlledSync({ queueIfBusy: true });
+          }
+          scheduleNextPoll();
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          wasRealtimeDegradedRef.current = true;
+          realtimeStatusRef.current = status;
+          scheduleNextPoll();
         }
       });
 
     return () => {
-      clearInterval(pollInterval);
+      isDisposed = true;
+      clearScheduledPoll();
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
       supabase.removeChannel(channel);
     };
-  }, [loadSupabaseData, currentAccountId, formatDatabaseMessage, loadMessagesForConversation]);
+  }, [loadSupabaseData, currentAccountId, rawAllowedAccountIdsKey, formatDatabaseMessage, loadMessagesForConversation]);
 
   // Selecionar conversa, zerar mensagens não lidas e carregar histórico da tabela 'messages'
   const selectConversation = useCallback(
