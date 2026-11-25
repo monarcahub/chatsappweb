@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import type { Session } from '@supabase/supabase-js';
 import { Account, AuthUser } from '../types';
 import { supabase, isSupabaseConfigured, ensureSupabaseConfig } from '../lib/supabase';
 
@@ -7,8 +8,9 @@ interface AuthContextType {
   currentAccount: Account;
   availableAccounts: Account[];
   isAuthenticated: boolean;
+  isAuthLoading: boolean;
   login: (email: string, password?: string, targetAccountId?: string) => Promise<{ success: boolean; error?: string }>;
-  logout: () => void;
+  logout: () => Promise<void> | void;
   switchAccount: (accountId: string) => void;
   registerAccount: (
     accountName: string,
@@ -28,9 +30,10 @@ interface AuthContextType {
   updateCurrentAccount: (updates: Partial<Account>) => Promise<{ success: boolean; error?: string }> | void;
 }
 
-const STORAGE_KEY_USER = 'chatsapp_auth_user';
-const STORAGE_KEY_ACCOUNT = 'chatsapp_current_account';
-const STORAGE_KEY_ALL_ACCOUNTS = 'chatsapp_accounts_list';
+const LEGACY_STORAGE_KEY_USER = 'chatsapp_auth_user';
+const LEGACY_STORAGE_KEY_ACCOUNT = 'chatsapp_current_account';
+const LEGACY_STORAGE_KEY_ALL_ACCOUNTS = 'chatsapp_accounts_list';
+const PREFERRED_ACCOUNT_STORAGE_KEY = 'chatsapp_preferred_account_id';
 
 export const UNLINKED_ACCOUNT: Account = {
   id: '',
@@ -69,228 +72,387 @@ export const mapDbAccountToAccount = (accRow: any): Account => {
   };
 };
 
+const clearLegacyAndAuthStorage = (clearPreferredAccount = false) => {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(LEGACY_STORAGE_KEY_USER);
+    localStorage.removeItem(LEGACY_STORAGE_KEY_ACCOUNT);
+    localStorage.removeItem(LEGACY_STORAGE_KEY_ALL_ACCOUNTS);
+    if (clearPreferredAccount) {
+      localStorage.removeItem(PREFERRED_ACCOUNT_STORAGE_KEY);
+    }
+  } catch {
+    // Ignora falhas de acesso ao storage
+  }
+};
+
+const getPreferredAccountId = (): string | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const preferred = localStorage.getItem(PREFERRED_ACCOUNT_STORAGE_KEY);
+    return preferred && preferred.trim() ? preferred.trim() : null;
+  } catch {
+    return null;
+  }
+};
+
+const setPreferredAccountId = (accountId: string) => {
+  if (typeof window === 'undefined') return;
+  try {
+    if (accountId) {
+      localStorage.setItem(PREFERRED_ACCOUNT_STORAGE_KEY, accountId);
+    } else {
+      localStorage.removeItem(PREFERRED_ACCOUNT_STORAGE_KEY);
+    }
+  } catch {
+    // Ignora falhas de acesso ao storage
+  }
+};
+
+const buildAccountOptions = (userAccounts: Account[]): Account[] => {
+  const options: Account[] = [...userAccounts];
+  if (userAccounts.length > 1) {
+    options.push({
+      id: 'all',
+      name: 'Todas as Minhas Empresas (Consolidado)',
+      slug: 'todas-minhas-empresas',
+      segment: 'Visão Geral Multi-Tenant',
+      whatsappPhone: '',
+      plan: 'Consolidado',
+      createdAt: new Date().toISOString(),
+    });
+  }
+  return options;
+};
+
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Inicializa a conta atual sem fallbacks arbitrários
-  const [currentAccount, setCurrentAccount] = useState<Account>(() => {
-    try {
-      const savedAcc = localStorage.getItem(STORAGE_KEY_ACCOUNT);
-      if (savedAcc) {
-        const parsed = JSON.parse(savedAcc);
-        if (parsed && typeof parsed.id === 'string' && parsed.id !== 'a0000000-0000-0000-0000-000000000001') {
-          return parsed;
-        }
+  // Nunca considera localStorage como prova de autenticação ou autorização
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [currentAccount, setCurrentAccount] = useState<Account>(UNLINKED_ACCOUNT);
+  const [availableAccounts, setAvailableAccounts] = useState<Account[]>([]);
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
+
+  const isRegisteringRef = useRef<boolean>(false);
+  const sessionEpochRef = useRef<number>(0);
+  const activeUserIdRef = useRef<string | null>(null);
+  const hasLoadedLinksRef = useRef<boolean>(false);
+  const hydrationInFlightRef = useRef<{ userId: string; promise: Promise<void> } | null>(null);
+
+  const currentAccountIdRef = useRef<string>(currentAccount.id);
+  currentAccountIdRef.current = currentAccount.id;
+
+  const hydrateFromSession = useCallback(
+    async (
+      session: Session | null,
+      options?: { force?: boolean; preferredAccountId?: string }
+    ): Promise<void> => {
+      if (!session?.access_token || !session?.user?.id) {
+        sessionEpochRef.current += 1;
+        hydrationInFlightRef.current = null;
+        activeUserIdRef.current = null;
+        hasLoadedLinksRef.current = false;
+        setUser(null);
+        setAvailableAccounts([]);
+        setCurrentAccount(UNLINKED_ACCOUNT);
+        clearLegacyAndAuthStorage(false);
+        setIsAuthLoading(false);
+        return;
       }
-    } catch (e) {
-      console.warn('Erro ao ler conta atual:', e);
-    }
-    return UNLINKED_ACCOUNT;
-  });
 
-  // Inicializa a lista de contas disponíveis para o usuário logado
-  const [availableAccounts, setAvailableAccounts] = useState<Account[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_ALL_ACCOUNTS);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          const filtered = parsed.filter(
-            (a: any) => a && a.id && a.id !== 'a0000000-0000-0000-0000-000000000001'
-          );
-          if (filtered.length > 0) return filtered;
-        }
+      const authUserId = session.user.id;
+
+      // Evita consultas redundantes durante TOKEN_REFRESHED quando identidade e vínculos permanecem iguais
+      if (
+        !options?.force &&
+        activeUserIdRef.current === authUserId &&
+        hasLoadedLinksRef.current
+      ) {
+        setIsAuthLoading(false);
+        return;
       }
-    } catch (e) {
-      console.warn('Erro ao ler accounts do localStorage:', e);
-    }
-    return [];
-  });
 
-  // Inicializa o usuário logado
-  const [user, setUser] = useState<AuthUser | null>(() => {
-    try {
-      const savedUser = localStorage.getItem(STORAGE_KEY_USER);
-      if (savedUser) {
-        return JSON.parse(savedUser);
+      if (!options?.force && hydrationInFlightRef.current?.userId === authUserId) {
+        return hydrationInFlightRef.current.promise;
       }
-    } catch (e) {
-      console.warn('Erro ao ler usuário logado:', e);
-    }
-    return null;
-  });
 
-  // Flag de bloqueio para impedir que syncUserAccountsFromDb execute durante o onboarding
-  const isRegisteringRef = useRef(false);
+      const myEpoch = ++sessionEpochRef.current;
 
-  // Salvar no localStorage sempre que houver mudanças
-  useEffect(() => {
-    if (user) {
-      localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(user));
-    } else {
-      localStorage.removeItem(STORAGE_KEY_USER);
-    }
-  }, [user]);
-
-  useEffect(() => {
-    if (currentAccount && currentAccount.id) {
-      localStorage.setItem(STORAGE_KEY_ACCOUNT, JSON.stringify(currentAccount));
-    } else {
-      localStorage.removeItem(STORAGE_KEY_ACCOUNT);
-    }
-  }, [currentAccount]);
-
-  useEffect(() => {
-    if (availableAccounts && availableAccounts.length > 0) {
-      localStorage.setItem(STORAGE_KEY_ALL_ACCOUNTS, JSON.stringify(availableAccounts));
-    } else {
-      localStorage.removeItem(STORAGE_KEY_ALL_ACCOUNTS);
-    }
-  }, [availableAccounts]);
-
-  // Sincroniza em segundo plano estritamente as empresas reais vinculadas ao usuário logado via account_users
-  useEffect(() => {
-    const syncUserAccountsFromDb = async () => {
-      // Se houver processo de onboarding / cadastro em andamento, não sobrescreve
-      if (isRegisteringRef.current) return;
-      if (!user?.id) return;
-
-      try {
-        await ensureSupabaseConfig();
-        if (!isSupabaseConfigured) return;
-
-        // Autorização estrita: auth.uid() -> account_users.user_id = user.id (com fallback para user.email)
-        let accountUserRows: any[] | null = null;
-        const { data: byUserId, error: byUserIdErr } = await supabase
-          .from('account_users')
-          .select('account_id, role, is_ai_agent, accounts(*)')
-          .eq('user_id', user.id);
-
-        if (byUserId && byUserId.length > 0) {
-          accountUserRows = byUserId;
-        } else if (user.email) {
-          const { data: byEmail } = await supabase
-            .from('account_users')
-            .select('account_id, role, is_ai_agent, accounts(*)')
-            .eq('email', user.email.toLowerCase().trim());
-          if (byEmail && byEmail.length > 0) {
-            accountUserRows = byEmail;
-            supabase
-              .from('account_users')
-              .update({ user_id: user.id })
-              .eq('email', user.email.toLowerCase().trim())
-              .is('user_id', null)
-              .then(() => {});
+      const runHydration = (async () => {
+        try {
+          await ensureSupabaseConfig();
+          if (myEpoch !== sessionEpochRef.current || !isSupabaseConfigured) {
+            return;
           }
-        }
 
-        if (byUserIdErr && !accountUserRows) {
-          console.warn('Erro ao sincronizar account_users:', byUserIdErr);
-          return;
-        }
+          // Garante remoção de chaves legadas que armazenavam objetos completos de usuário/empresas
+          clearLegacyAndAuthStorage(false);
 
-        // Se o onboarding foi iniciado durante a chamada, aborta sem alterar o estado
-        if (isRegisteringRef.current) return;
+          // 1. Consulta vínculos exclusivamente pelo user_id autenticado (exclui agentes de IA)
+          const { data: accountUserRows, error: uaError } = await supabase
+            .from('account_users')
+            .select('account_id, role, name, email, is_ai_agent, accounts(*)')
+            .eq('user_id', authUserId);
 
-        if (accountUserRows) {
-          const userAccounts: Account[] = accountUserRows
-            .filter((r: any) => r && (r.is_ai_agent === null || r.is_ai_agent === false))
+          if (myEpoch !== sessionEpochRef.current) return;
+
+          if (uaError) {
+            console.warn('Erro ao consultar vínculos em account_users:', uaError.message);
+            activeUserIdRef.current = authUserId;
+            hasLoadedLinksRef.current = false;
+            setAvailableAccounts([]);
+            setCurrentAccount(UNLINKED_ACCOUNT);
+            setUser({
+              id: authUserId,
+              name:
+                session.user.user_metadata?.name ||
+                session.user.email?.split('@')[0] ||
+                'Usuário',
+              email: session.user.email || '',
+              role: 'agent',
+              accountId: '',
+              accountName: 'Nenhuma empresa vinculada',
+              mood: 'Disponível',
+            });
+            return;
+          }
+
+          const humanRows = (accountUserRows || []).filter(
+            (r: any) => r && (r.is_ai_agent === null || r.is_ai_agent === false)
+          );
+
+          const userAccounts: Account[] = humanRows
             .map((r: any) => r.accounts)
             .filter((a: any) => Boolean(a && a.id))
             .map((a: any) => mapDbAccountToAccount(a));
 
-          if (userAccounts.length > 0) {
-            const options: Account[] = [...userAccounts];
-            if (userAccounts.length > 1) {
-              options.push({
-                id: 'all',
-                name: 'Todas as Minhas Empresas (Consolidado)',
-                slug: 'todas-minhas-empresas',
-                segment: 'Visão Geral Multi-Tenant',
-                whatsappPhone: '',
-                plan: 'Consolidado',
-                createdAt: new Date().toISOString(),
-              });
-            }
-            setAvailableAccounts(options);
+          // 2. Carrega ou inicializa perfil pessoal em public.profiles pelo auth.uid()
+          let profileData: any = null;
+          try {
+            const { data: profileRow, error: profileErr } = await supabase
+              .from('profiles')
+              .select('id, name, phone, role_title, bio, mood, avatar_url')
+              .eq('id', authUserId)
+              .maybeSingle();
 
-            // Se a conta atual não pertencer à lista de empresas vinculadas do usuário, seleciona a primeira dele
-            setCurrentAccount((prev) => {
-              if (prev.id === 'all' && userAccounts.length > 1) return prev;
-              const exists = userAccounts.some((a) => a.id === prev.id);
-              return exists && prev.id !== '' ? prev : userAccounts[0];
-            });
-          } else if (!isRegisteringRef.current) {
-            // Nenhuma conta vinculada a este usuário no banco de dados
+            if (myEpoch !== sessionEpochRef.current) return;
+
+            if (profileRow) {
+              profileData = profileRow;
+            } else if (!profileErr) {
+              const fallbackName =
+                humanRows[0]?.name ||
+                session.user.user_metadata?.name ||
+                session.user.email?.split('@')[0] ||
+                'Usuário';
+
+              const { data: newProfile } = await supabase
+                .from('profiles')
+                .insert({
+                  id: authUserId,
+                  name: fallbackName,
+                  mood: 'Disponível',
+                })
+                .select('id, name, phone, role_title, bio, mood, avatar_url')
+                .maybeSingle();
+
+              if (myEpoch !== sessionEpochRef.current) return;
+              if (newProfile) {
+                profileData = newProfile;
+              }
+            }
+          } catch (profErr) {
+            console.warn('Erro ao sincronizar public.profiles:', profErr);
+          }
+
+          if (myEpoch !== sessionEpochRef.current) return;
+
+          if (userAccounts.length > 0) {
+            const optionsList = buildAccountOptions(userAccounts);
+            const preferredId = options?.preferredAccountId || getPreferredAccountId();
+            const currentValidId = currentAccountIdRef.current;
+
+            let selectedAccount = userAccounts[0];
+            if (preferredId && optionsList.some((a) => a.id === preferredId)) {
+              selectedAccount = optionsList.find((a) => a.id === preferredId) || userAccounts[0];
+            } else if (currentValidId && optionsList.some((a) => a.id === currentValidId)) {
+              selectedAccount =
+                optionsList.find((a) => a.id === currentValidId) || userAccounts[0];
+            }
+
+            const primaryUserRow =
+              humanRows.find((r: any) => r.accounts?.id === selectedAccount.id) || humanRows[0];
+
+            const resolvedUser: AuthUser = {
+              id: authUserId,
+              name:
+                profileData?.name ||
+                primaryUserRow?.name ||
+                session.user.user_metadata?.name ||
+                session.user.email?.split('@')[0] ||
+                'Administrador',
+              email: session.user.email || primaryUserRow?.email || '',
+              role: primaryUserRow?.role || 'admin',
+              accountId: selectedAccount.id,
+              accountName: selectedAccount.name,
+              phone: profileData?.phone,
+              role_title: profileData?.role_title,
+              bio: profileData?.bio,
+              mood: profileData?.mood || 'Disponível',
+              avatarUrl: profileData?.avatar_url,
+            };
+
+            activeUserIdRef.current = authUserId;
+            hasLoadedLinksRef.current = true;
+            setAvailableAccounts(optionsList);
+            setCurrentAccount(selectedAccount);
+            setUser(resolvedUser);
+            setPreferredAccountId(selectedAccount.id);
+          } else {
+            // Usuário autenticado sem empresa vinculada: nunca atribui empresa padrão
+            const unlinkedUser: AuthUser = {
+              id: authUserId,
+              name:
+                profileData?.name ||
+                session.user.user_metadata?.name ||
+                session.user.email?.split('@')[0] ||
+                'Usuário',
+              email: session.user.email || '',
+              role: 'agent',
+              accountId: '',
+              accountName: 'Nenhuma empresa vinculada',
+              phone: profileData?.phone,
+              role_title: profileData?.role_title,
+              bio: profileData?.bio,
+              mood: profileData?.mood || 'Disponível',
+              avatarUrl: profileData?.avatar_url,
+            };
+
+            activeUserIdRef.current = authUserId;
+            hasLoadedLinksRef.current = true;
             setAvailableAccounts([]);
             setCurrentAccount(UNLINKED_ACCOUNT);
+            setUser(unlinkedUser);
+            setPreferredAccountId('');
+          }
+        } catch (err) {
+          console.warn('Erro ao validar sessão e vínculos no Supabase:', err);
+          if (myEpoch === sessionEpochRef.current) {
+            activeUserIdRef.current = null;
+            hasLoadedLinksRef.current = false;
+            setAvailableAccounts([]);
+            setCurrentAccount(UNLINKED_ACCOUNT);
+            setUser(null);
+          }
+        } finally {
+          if (hydrationInFlightRef.current?.promise === runHydration) {
+            hydrationInFlightRef.current = null;
+          }
+          if (myEpoch === sessionEpochRef.current) {
+            setIsAuthLoading(false);
           }
         }
-      } catch (err) {
-        console.warn('Erro ao sincronizar empresas do usuário no AuthContext:', err);
+      })();
+
+      hydrationInFlightRef.current = { userId: authUserId, promise: runHydration };
+      return runHydration;
+    },
+    []
+  );
+
+  // Inicialização da sessão única via Supabase Auth + listener onAuthStateChange sem deadlocks
+  useEffect(() => {
+    let isMounted = true;
+    let authSubscription: { unsubscribe: () => void } | null = null;
+    let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleHydration = (session: Session | null, force = false) => {
+      if (pendingTimer) {
+        clearTimeout(pendingTimer);
       }
+      pendingTimer = setTimeout(() => {
+        if (!isMounted || isRegisteringRef.current) return;
+        void hydrateFromSession(session, { force });
+      }, 0);
     };
 
-    const syncUserProfileFromDb = async () => {
-      if (!user?.id) return;
+    const initAuth = async () => {
       try {
         await ensureSupabaseConfig();
-        if (!isSupabaseConfigured) return;
+        if (!isMounted) return;
 
-        const { data: profileRow, error: profileErr } = await supabase
-          .from('profiles')
-          .select('id, name, phone, role_title, bio, mood, avatar_url')
-          .eq('id', user.id)
-          .maybeSingle();
+        if (!isSupabaseConfigured) {
+          clearLegacyAndAuthStorage(false);
+          setUser(null);
+          setAvailableAccounts([]);
+          setCurrentAccount(UNLINKED_ACCOUNT);
+          setIsAuthLoading(false);
+          return;
+        }
 
-        if (profileRow) {
-          setUser((prev) => {
-            if (!prev) return null;
-            return {
-              ...prev,
-              name: profileRow.name || prev.name,
-              phone: profileRow.phone ?? prev.phone,
-              role_title: profileRow.role_title ?? prev.role_title,
-              bio: profileRow.bio ?? prev.bio,
-              mood: profileRow.mood || prev.mood || 'Disponível',
-              avatarUrl: profileRow.avatar_url ?? prev.avatarUrl,
-            };
-          });
-        } else if (!profileErr) {
-          // Se ainda não existir registro em profiles para este auth.uid(), cria inicial sem email
-          const fallbackName = user.name || 'Usuário';
-          const { data: newProfile } = await supabase
-            .from('profiles')
-            .insert({
-              id: user.id,
-              name: fallbackName,
-              mood: 'Disponível',
-            })
-            .select('id, name, phone, role_title, bio, mood, avatar_url')
-            .maybeSingle();
+        const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+          if (!isMounted) return;
 
-          if (newProfile) {
-            setUser((prev) => {
-              if (!prev) return null;
-              return {
-                ...prev,
-                name: newProfile.name || prev.name,
-                avatarUrl: newProfile.avatar_url ?? prev.avatarUrl,
-                mood: newProfile.mood || prev.mood,
-              };
-            });
+          if (event === 'SIGNED_OUT') {
+            if (pendingTimer) clearTimeout(pendingTimer);
+            scheduleHydration(null, true);
+            return;
           }
+
+          if (isRegisteringRef.current) {
+            return;
+          }
+
+          // INITIAL_SESSION é tratada explicitamente abaixo via getSession()
+          if (event === 'INITIAL_SESSION') {
+            return;
+          }
+
+          if (event === 'SIGNED_IN' || event === 'USER_UPDATED') {
+            scheduleHydration(session);
+            return;
+          }
+
+          if (event === 'TOKEN_REFRESHED') {
+            if (
+              session?.user?.id &&
+              activeUserIdRef.current === session.user.id &&
+              hasLoadedLinksRef.current
+            ) {
+              return;
+            }
+            scheduleHydration(session);
+          }
+        });
+        authSubscription = authListener?.subscription ?? null;
+
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        if (!isMounted) return;
+
+        if (sessionError || !sessionData?.session?.access_token) {
+          await hydrateFromSession(null, { force: true });
+        } else {
+          await hydrateFromSession(sessionData.session);
         }
       } catch (err) {
-        console.warn('Erro ao sincronizar public.profiles:', err);
+        console.warn('Falha ao inicializar autenticação:', err);
+        if (isMounted) {
+          await hydrateFromSession(null, { force: true });
+        }
       }
     };
 
-    syncUserAccountsFromDb();
-    syncUserProfileFromDb();
-  }, [user?.id]);
+    void initAuth();
 
-  // Login com verificação inteligente de e-mail e senha no Supabase (API Serverless + Direct Client Fallback)
+    return () => {
+      isMounted = false;
+      if (pendingTimer) clearTimeout(pendingTimer);
+      authSubscription?.unsubscribe();
+    };
+  }, [hydrateFromSession]);
+
+  // Login centralizado exclusivamente no Supabase Auth
   const login = async (
     email: string,
     password?: string,
@@ -298,72 +460,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   ): Promise<{ success: boolean; error?: string }> => {
     const cleanEmail = email.trim().toLowerCase();
 
-    // 1. Tentar primeiro via Endpoint de API (/api/auth/login)
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: cleanEmail, password: password || '' }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-
-      if (res.ok && data.account && data.user) {
-        const acc: Account = {
-          id: data.account.id,
-          name: data.account.name,
-          slug: data.account.slug,
-          segment: data.account.segment,
-          whatsappPhone: data.account.whatsappPhone || '+55 11 99999-9999',
-          plan: data.account.plan || 'Plano Pro Omnichannel',
-          createdAt: data.account.createdAt,
-        };
-        const authUser: AuthUser = {
-          id: data.user.id,
-          name: data.user.name,
-          email: data.user.email,
-          role: data.user.role || 'admin',
-          accountId: acc.id,
-          accountName: acc.name,
-          avatarUrl: data.user.avatarUrl,
-        };
-
-        const accountsList =
-          Array.isArray(data.availableAccounts) && data.availableAccounts.length > 0
-            ? data.availableAccounts
-            : [acc];
-
-        setAvailableAccounts(accountsList);
-        setCurrentAccount(acc);
-        setUser(authUser);
-        return { success: true };
-      }
-
-      // Se a rota respondeu explicitamente que a senha é incorreta ou usuário não existe
-      if (res.status === 401 || res.status === 404 || res.status === 400) {
+      await ensureSupabaseConfig();
+      if (!isSupabaseConfigured) {
         return {
           success: false,
-          error: data.error || 'Credenciais inválidas. Verifique seu e-mail e senha.',
+          error: 'Serviço de autenticação não configurado no cliente.',
         };
       }
 
-      // Se o erro foi 503 (Supabase não configurado no backend da Vercel)
-      if (res.status === 503) {
-        console.warn('Backend /api/auth/login sem Supabase configurado:', data.error);
-      }
-    } catch (err: any) {
-      console.warn('Aviso: /api/auth/login inacessível, tentando conexão direta com Supabase SDK...', err);
-    }
-
-    // 2. Fallback resiliente: autenticação direta via Supabase Client
-    if (!isSupabaseConfigured) {
-      return {
-        success: false,
-        error: 'Falha na conexão com o servidor de autenticação. Tente novamente mais tarde.',
-      };
-    }
-
-    try {
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email: cleanEmail,
         password: password || '',
@@ -382,297 +487,56 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
-      // Login no Supabase Auth bem sucedido! Localiza estritamente as empresas vinculadas a este usuário via user.id
-      const authUserId = authData.user?.id;
-      if (!authUserId) {
+      if (!authData.session || !authData.user?.id) {
         return {
           success: false,
-          error: 'Identificador de usuário não retornado pelo serviço de autenticação.',
+          error: 'Sessão de autenticação não retornada pelo Supabase.',
         };
       }
 
-      let userRows: any[] | null = null;
-      const { data: byUserId } = await supabase
-        .from('account_users')
-        .select('*, accounts(*)')
-        .eq('user_id', authUserId);
+      await hydrateFromSession(authData.session, {
+        force: true,
+        preferredAccountId: targetAccountId,
+      });
 
-      if (byUserId && byUserId.length > 0) {
-        userRows = byUserId;
-      } else {
-        const { data: byEmail } = await supabase
-          .from('account_users')
-          .select('*, accounts(*)')
-          .eq('email', cleanEmail);
-
-        if (byEmail && byEmail.length > 0) {
-          userRows = byEmail;
-          // Vincula o user_id permanente em account_users
-          supabase
-            .from('account_users')
-            .update({ user_id: authUserId })
-            .eq('email', cleanEmail)
-            .is('user_id', null)
-            .then(() => {});
-        }
-      }
-
-      const validAccounts: Account[] = (userRows || [])
-        .map((r: any) => r.accounts)
-        .filter((accRow: any) => Boolean(accRow && accRow.id))
-        .map((accRow: any) => mapDbAccountToAccount(accRow));
-
-      // 3. Carregar ou criar perfil pessoal em public.profiles usando o authUserId
-      let profileData: any = null;
-      try {
-        const { data: existingProfile, error: profSelectErr } = await supabase
-          .from('profiles')
-          .select('id, name, phone, role_title, bio, mood, avatar_url')
-          .eq('id', authUserId)
-          .maybeSingle();
-
-        if (existingProfile) {
-          profileData = existingProfile;
-        } else if (!profSelectErr) {
-          const initialName =
-            userRows?.[0]?.name ||
-            authData.user?.user_metadata?.name ||
-            cleanEmail.split('@')[0] ||
-            'Usuário';
-
-          const { data: createdProfile } = await supabase
-            .from('profiles')
-            .insert({
-              id: authUserId,
-              name: initialName,
-              mood: 'Disponível',
-            })
-            .select('id, name, phone, role_title, bio, mood, avatar_url')
-            .maybeSingle();
-
-          if (createdProfile) {
-            profileData = createdProfile;
-          }
-        }
-      } catch (profErr) {
-        console.warn('Erro ao consultar public.profiles no login:', profErr);
-      }
-
-      if (validAccounts.length > 0) {
-        const primaryAcc = validAccounts[0];
-        const primaryUserRow = userRows?.find((r: any) => r.accounts?.id === primaryAcc.id) || userRows?.[0];
-
-        const authUser: AuthUser = {
-          id: authUserId,
-          name: profileData?.name || primaryUserRow?.name || authData.user?.user_metadata?.name || 'Administrador',
-          email: authData.user?.email || primaryUserRow?.email || cleanEmail,
-          role: primaryUserRow?.role || 'admin',
-          accountId: primaryAcc.id,
-          accountName: primaryAcc.name,
-          phone: profileData?.phone,
-          role_title: profileData?.role_title,
-          bio: profileData?.bio,
-          mood: profileData?.mood || 'Disponível',
-          avatarUrl: profileData?.avatar_url,
-        };
-
-        const options: Account[] = [...validAccounts];
-        if (validAccounts.length > 1) {
-          options.push({
-            id: 'all',
-            name: 'Todas as Minhas Empresas (Consolidado)',
-            slug: 'todas-minhas-empresas',
-            segment: 'Visão Geral Multi-Tenant',
-            whatsappPhone: '',
-            plan: 'Consolidado',
-            createdAt: new Date().toISOString(),
-          });
-        }
-
-        setAvailableAccounts(options);
-        setCurrentAccount(primaryAcc);
-        setUser(authUser);
-        return { success: true };
-      }
-
-      // Se autenticado no Supabase Auth mas SEM NENHUM vínculo em account_users:
-      // Tenta auto-provisionar a empresa para o usuário (ex: recém-cadastrado pós-confirmação de e-mail)
-      let pendingReg: any = null;
-      try {
-        const rawPending = localStorage.getItem(`pending_reg_${cleanEmail}`);
-        if (rawPending) pendingReg = JSON.parse(rawPending);
-      } catch {}
-
-      const metaCompanyName =
-        pendingReg?.companyName ||
-        authData.user?.user_metadata?.company_name ||
-        authData.user?.user_metadata?.companyName;
-      const metaSegment =
-        pendingReg?.segment ||
-        authData.user?.user_metadata?.company_segment ||
-        authData.user?.user_metadata?.companySegment ||
-        'Serviços & Atendimento';
-      const metaAdminName =
-        pendingReg?.adminName ||
-        profileData?.name ||
-        authData.user?.user_metadata?.name ||
-        cleanEmail.split('@')[0] ||
-        'Administrador';
-
-      const companyNameToCreate = metaCompanyName?.trim() || `Empresa de ${metaAdminName}`;
-
-      let autoProvisionedAcc: Account | null = null;
-
-      // 1. Tentar provisionar via RPC create_new_account
-      try {
-        const { data: rpcRes, error: rpcErr } = await supabase.rpc('create_new_account', {
-          p_company_name: companyNameToCreate,
-          p_company_segment: metaSegment,
-          p_admin_name: metaAdminName,
-        });
-
-        if (!rpcErr && rpcRes?.account) {
-          autoProvisionedAcc = {
-            id: rpcRes.account.id,
-            name: rpcRes.account.name || companyNameToCreate,
-            slug: rpcRes.account.slug || 'empresa',
-            segment: rpcRes.account.segment || metaSegment,
-            whatsappPhone: rpcRes.account.whatsapp_phone || '',
-            plan: rpcRes.account.plan || 'Plano Pro Omnichannel',
-            createdAt: rpcRes.account.createdAt || new Date().toISOString(),
-          };
-        }
-      } catch (rpcEx) {
-        console.warn('RPC create_new_account falhou, tentando inserção direta:', rpcEx);
-      }
-
-      // 2. Fallback de inserção direta caso a RPC não tenha sido criada no banco
-      if (!autoProvisionedAcc) {
-        try {
-          const baseSlug = companyNameToCreate
-            .toLowerCase()
-            .normalize('NFD')
-            .replace(/[\u0300-\u036f]/g, '')
-            .replace(/[^a-z0-9]/g, '-')
-            .replace(/-+/g, '-')
-            .replace(/^-|-$/g, '') || 'empresa';
-          const slug = `${baseSlug}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-          const { data: createdAcc } = await supabase
-            .from('accounts')
-            .insert({
-              name: companyNameToCreate,
-              slug,
-              segment: metaSegment,
-              plan: 'pro',
-            })
-            .select('*')
-            .single();
-
-          if (createdAcc) {
-            await supabase.from('account_users').insert([
-              {
-                account_id: createdAcc.id,
-                user_id: authUserId,
-                name: metaAdminName,
-                email: cleanEmail,
-                role: 'admin',
-                is_ai_agent: false,
-              },
-              {
-                account_id: createdAcc.id,
-                name: `Agente IA - ${companyNameToCreate}`,
-                email: `ia.${slug}@monarcahub.com`,
-                role: 'ai_agent',
-                is_ai_agent: true,
-              },
-            ]);
-
-            await supabase.from('cerebro_ia').upsert(
-              {
-                account_id: createdAcc.id,
-                user_id: authUserId,
-                business_name: companyNameToCreate,
-                tone_of_voice: 'Amigável, acolhedor e consultivo',
-                is_active: true,
-              },
-              { onConflict: 'account_id' }
-            );
-
-            autoProvisionedAcc = mapDbAccountToAccount(createdAcc);
-          }
-        } catch (directEx) {
-          console.warn('Erro no fallback de criação da empresa:', directEx);
-        }
-      }
-
-      if (autoProvisionedAcc) {
-        const authUser: AuthUser = {
-          id: authUserId,
-          name: metaAdminName,
-          email: authData.user?.email || cleanEmail,
-          role: 'admin',
-          accountId: autoProvisionedAcc.id,
-          accountName: autoProvisionedAcc.name,
-          phone: profileData?.phone,
-          role_title: profileData?.role_title || 'Gestor / Administrador',
-          bio: profileData?.bio,
-          mood: profileData?.mood || 'Disponível',
-          avatarUrl: profileData?.avatar_url,
-        };
-
-        setAvailableAccounts([autoProvisionedAcc]);
-        setCurrentAccount(autoProvisionedAcc);
-        setUser(authUser);
-
-        try {
-          localStorage.setItem(STORAGE_KEY_ACCOUNT, JSON.stringify(autoProvisionedAcc));
-          localStorage.setItem(STORAGE_KEY_ALL_ACCOUNTS, JSON.stringify([autoProvisionedAcc]));
-          localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(authUser));
-          localStorage.removeItem(`pending_reg_${cleanEmail}`);
-        } catch {}
-
-        return { success: true };
-      }
-
-      const unlinkedUser: AuthUser = {
-        id: authUserId,
-        name: profileData?.name || authData.user?.user_metadata?.name || cleanEmail.split('@')[0],
-        email: authData.user?.email || cleanEmail,
-        role: 'agent',
-        accountId: '',
-        accountName: 'Nenhuma empresa vinculada',
-        phone: profileData?.phone,
-        role_title: profileData?.role_title,
-        bio: profileData?.bio,
-        mood: profileData?.mood || 'Disponível',
-        avatarUrl: profileData?.avatar_url,
-      };
-
-      setAvailableAccounts([]);
-      setCurrentAccount(UNLINKED_ACCOUNT);
-      setUser(unlinkedUser);
       return { success: true };
     } catch (directErr: any) {
       console.error('Erro na autenticação:', directErr);
       return {
         success: false,
-        error: directErr?.message || 'Erro inesperado ao consultar o servidor.',
+        error: directErr?.message || 'Erro inesperado ao autenticar.',
       };
     }
   };
 
-  const logout = () => {
+  // Logout real no Supabase Auth (escopo local) + limpeza integral de estado e caches
+  const logout = async () => {
+    sessionEpochRef.current += 1;
+    hydrationInFlightRef.current = null;
+    activeUserIdRef.current = null;
+    hasLoadedLinksRef.current = false;
+
     setUser(null);
-    localStorage.removeItem(STORAGE_KEY_USER);
-    localStorage.removeItem(STORAGE_KEY_ACCOUNT);
-    localStorage.removeItem(STORAGE_KEY_ALL_ACCOUNTS);
+    setAvailableAccounts([]);
+    setCurrentAccount(UNLINKED_ACCOUNT);
+    setIsAuthLoading(false);
+    clearLegacyAndAuthStorage(true);
+
+    try {
+      await ensureSupabaseConfig();
+      if (isSupabaseConfigured) {
+        await supabase.auth.signOut({ scope: 'local' });
+      }
+    } catch (err) {
+      console.warn('Aviso ao encerrar sessão local no Supabase Auth:', err);
+    }
   };
 
   const switchAccount = (accountId: string) => {
     const target = availableAccounts.find((a) => a.id === accountId);
     if (!target) return;
     setCurrentAccount(target);
+    setPreferredAccountId(target.id);
     if (user) {
       setUser({
         ...user,
@@ -682,22 +546,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Atualizar perfil do usuário logado (persistido em public.profiles)
+  // Atualizar perfil do usuário logado (persistido em public.profiles com sessão válida)
   const updateUserProfile = async (updates: Partial<AuthUser>) => {
+    const previousUser = user;
     setUser((prev) => {
       if (!prev) return null;
-      const updated = { ...prev, ...updates };
-      localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(updated));
-      return updated;
+      return { ...prev, ...updates };
     });
-
-    const targetUserId = user?.id;
-    if (!targetUserId) return;
 
     try {
       await ensureSupabaseConfig();
+      if (!isSupabaseConfigured) return;
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const sessionUserId = sessionData?.session?.user?.id;
+      if (!sessionData?.session?.access_token || !sessionUserId) {
+        if (previousUser) setUser(previousUser);
+        return;
+      }
+
       const payload: Record<string, any> = {
-        id: targetUserId,
+        id: sessionUserId,
         updated_at: new Date().toISOString(),
       };
 
@@ -708,9 +577,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (updates.mood !== undefined) payload.mood = updates.mood;
       if (updates.avatarUrl !== undefined) payload.avatar_url = updates.avatarUrl;
 
-      const { error } = await supabase
-        .from('profiles')
-        .upsert(payload);
+      const { error } = await supabase.from('profiles').upsert(payload);
 
       if (error) {
         console.error('[Supabase] Erro ao salvar em public.profiles:', error.message);
@@ -721,29 +588,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   // Atualizar dados da conta atual (persiste em public.accounts e sincroniza contexto)
-  const updateCurrentAccount = async (updates: Partial<Account>): Promise<{ success: boolean; error?: string }> => {
-    if (!currentAccount?.id) {
+  const updateCurrentAccount = async (
+    updates: Partial<Account>
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!currentAccount?.id || currentAccount.id === 'all') {
       return { success: false, error: 'Nenhuma empresa ativa selecionada.' };
     }
 
     const updatedAccount: Account = { ...currentAccount, ...updates };
 
-    // Atualiza estado local imediatamente para feedback reativo
     setCurrentAccount(updatedAccount);
     setAvailableAccounts((prevList) =>
       prevList.map((acc) => (acc.id === currentAccount.id ? { ...acc, ...updates } : acc))
     );
-    try {
-      localStorage.setItem(STORAGE_KEY_ACCOUNT, JSON.stringify(updatedAccount));
-    } catch {}
 
-    // Se o nome da empresa mudou, reflete em user.accountName
     if (updates.name && user) {
-      const updatedUser: AuthUser = { ...user, accountName: updates.name };
-      setUser(updatedUser);
-      try {
-        localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(updatedUser));
-      } catch {}
+      setUser({ ...user, accountName: updates.name });
     }
 
     try {
@@ -752,11 +612,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return { success: true };
       }
 
+      const { data: sessionData } = await supabase.auth.getSession();
+      if (!sessionData?.session?.access_token) {
+        return { success: false, error: 'Sessão de autenticação inválida ou expirada.' };
+      }
+
       const payload: Record<string, any> = {
         updated_at: new Date().toISOString(),
       };
 
-      // Mapear todas as colunas existentes em public.accounts
       if (updates.name !== undefined) payload.name = updates.name.trim();
       if (updates.segment !== undefined) payload.segment = updates.segment.trim();
       if (updates.whatsappPhone !== undefined) {
@@ -823,7 +687,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
-      // Verificação de segurança prévia de duplicidade pelo WhatsApp comercial
+      // Verificação prévia opcional de duplicidade pelo WhatsApp comercial
       if (normalizedPhone.length >= 8) {
         try {
           const { data: existingAccounts } = await supabase
@@ -835,7 +699,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               const dbPhone = (acc.whatsapp_phone || '').replace(/\D/g, '');
               if (!dbPhone || dbPhone.length < 8) return false;
               if (dbPhone === normalizedPhone) return true;
-              // Para números do Brasil (DDI 55), compara DDD + número
               if (dbPhone.length >= 10 && normalizedPhone.length >= 10) {
                 if (dbPhone.startsWith('55') && normalizedPhone.startsWith('55')) {
                   return dbPhone.slice(-9) === normalizedPhone.slice(-9);
@@ -894,7 +757,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
-      // Se a confirmação de e-mail estiver ativa no projeto Supabase, a sessão vem nula
       if (!signUpData.session) {
         return {
           success: false,
@@ -916,7 +778,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
 
         if (call4.error && call4.error.code === 'PGRST202') {
-          // Se o banco ainda não recebeu a atualização com p_whatsapp_phone, chama versão com 3 params
           const call3 = await supabase.rpc('create_new_account', {
             p_company_name: cleanCompanyName,
             p_company_segment: cleanSegment,
@@ -932,7 +793,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         rpcError = rpcEx;
       }
 
-      // Se a RPC detectar forte indício de empresa já cadastrada
       if (
         rpcResult &&
         (rpcResult.success === false || rpcResult.code === 'POSSIBLE_DUPLICATE_COMPANY')
@@ -956,8 +816,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
-      // 3. REIDRATAÇÃO DIRETA NO BANCO (NÃO DEPENDER SOMENTE DO RETORNO DA RPC):
-      // Consulta novamente o banco usando exclusivamente: account_users.user_id = auth.user.id
+      // 3. Re-hidratação estrita no banco pelo user_id autenticado (exclui agentes de IA)
       const { data: userAccountsData, error: uaError } = await supabase
         .from('account_users')
         .select('account_id, role, is_ai_agent, accounts(*)')
@@ -976,8 +835,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const createdAccId = rpcResult?.account?.id;
       let targetAccount = freshAccounts.find((a) => a.id === createdAccId);
 
-      // Se a conta não apareceu ainda no select direto de account_users devido a atraso de replicação,
-      // usa os dados retornados pela RPC transacional
       if (!targetAccount && rpcResult?.account) {
         targetAccount = {
           id: rpcResult.account.id,
@@ -1001,7 +858,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         };
       }
 
-      // Se o número de WhatsApp foi fornecido e a conta ainda não o possui preenchido, atualiza
       if (cleanWhatsappPhone && !targetAccount.whatsappPhone) {
         targetAccount.whatsappPhone = cleanWhatsappPhone;
         supabase
@@ -1011,7 +867,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           .then(() => {});
       }
 
-      const activeAccountsList = freshAccounts.length > 0 ? freshAccounts : [targetAccount];
+      const activeAccountsList = buildAccountOptions(freshAccounts);
 
       const registeredUser: AuthUser = {
         id: authUser.id,
@@ -1025,18 +881,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         mood: 'Disponível',
       };
 
-      // Atualiza o estado da aplicação
+      sessionEpochRef.current += 1;
+      activeUserIdRef.current = authUser.id;
+      hasLoadedLinksRef.current = true;
       setAvailableAccounts(activeAccountsList);
       setCurrentAccount(targetAccount);
       setUser(registeredUser);
-
-      // Persistência local no navegador
-      try {
-        localStorage.setItem(STORAGE_KEY_ACCOUNT, JSON.stringify(targetAccount));
-        localStorage.setItem(STORAGE_KEY_ALL_ACCOUNTS, JSON.stringify(activeAccountsList));
-        localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(registeredUser));
-        localStorage.removeItem(`pending_reg_${cleanEmail}`);
-      } catch {}
+      setPreferredAccountId(targetAccount.id);
+      setIsAuthLoading(false);
+      clearLegacyAndAuthStorage(false);
 
       return { success: true, account: targetAccount };
     } catch (err: any) {
@@ -1056,7 +909,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         user,
         currentAccount,
         availableAccounts,
-        isAuthenticated: !!user,
+        isAuthenticated: Boolean(user?.id),
+        isAuthLoading,
         login,
         logout,
         switchAccount,

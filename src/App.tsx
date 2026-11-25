@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { MessageSquare, Bell, X, ExternalLink, Instagram, Globe } from 'lucide-react';
+import { MessageSquare, Bell, X, ExternalLink, Instagram, Globe, Building2, Loader2, LogOut } from 'lucide-react';
 import { LeftNavRail, NavRailTab } from './components/LeftNavRail';
 import { Sidebar } from './components/Sidebar';
 import { ChatArea } from './components/ChatArea';
@@ -27,6 +27,7 @@ import { supabase, isSupabaseConfigured, ensureSupabaseConfig } from './lib/supa
 function AppContent() {
   const {
     isAuthenticated,
+    isAuthLoading,
     currentAccount,
     user,
     availableAccounts,
@@ -36,9 +37,75 @@ function AppContent() {
 
   const [darkMode, setDarkMode] = useState(true);
 
-  // When not logged in or no company selected, show WhatsApp-style multi-tenant LoginScreen
-  if (!isAuthenticated || !currentAccount) {
+  // 1. Aguarda validação real da sessão no Supabase Auth antes de decidir a tela
+  if (isAuthLoading) {
+    return (
+      <div
+        className={`min-h-screen w-full flex flex-col items-center justify-center p-6 ${
+          darkMode ? 'bg-[#111b21] text-[#e9edef]' : 'bg-[#f0f2f5] text-[#111b21]'
+        }`}
+      >
+        <div
+          className={`flex flex-col items-center gap-3 px-6 py-5 rounded-2xl border ${
+            darkMode ? 'bg-[#202c33] border-[#2f3b43]' : 'bg-white border-[#d1d7db] shadow-sm'
+          }`}
+        >
+          <Loader2 className="w-6 h-6 text-[#00a884] animate-spin" />
+          <p className="text-sm font-medium">Verificando sessão...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Sem sessão autenticada válida: exibe LoginScreen
+  if (!isAuthenticated || !user?.id) {
     return <LoginScreen darkMode={darkMode} />;
+  }
+
+  // 3. Sessão autenticada sem empresa vinculada confirmada em account_users: bloqueia painel
+  const hasConfirmedAccount = Boolean(
+    currentAccount?.id && availableAccounts.some((acc) => acc.id === currentAccount.id)
+  );
+
+  if (!hasConfirmedAccount) {
+    return (
+      <div
+        className={`min-h-screen w-full flex items-center justify-center p-6 ${
+          darkMode ? 'bg-[#111b21] text-[#e9edef]' : 'bg-[#f0f2f5] text-[#111b21]'
+        }`}
+      >
+        <div
+          className={`w-full max-w-md rounded-2xl border p-6 space-y-4 ${
+            darkMode ? 'bg-[#202c33] border-[#2f3b43]' : 'bg-white border-[#d1d7db] shadow-sm'
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-full bg-[#00a884]/15 flex items-center justify-center shrink-0">
+              <Building2 className="w-5 h-5 text-[#00a884]" />
+            </div>
+            <div>
+              <h1 className="text-base font-semibold">Nenhuma empresa vinculada</h1>
+              <p className={`text-xs ${darkMode ? 'text-[#8696a0]' : 'text-[#54656f]'}`}>
+                {user.email}
+              </p>
+            </div>
+          </div>
+
+          <p className={`text-sm leading-relaxed ${darkMode ? 'text-[#aebac1]' : 'text-[#54656f]'}`}>
+            Sua conta está autenticada, mas não possui vínculo ativo com nenhuma empresa no momento. Solicite o vínculo ao administrador da sua organização ou entre com outra conta.
+          </p>
+
+          <button
+            type="button"
+            onClick={() => void logout()}
+            className="w-full py-2.5 px-4 rounded-xl bg-[#00a884] hover:bg-[#008f6f] text-[#111b21] font-semibold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Sair da conta</span>
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (

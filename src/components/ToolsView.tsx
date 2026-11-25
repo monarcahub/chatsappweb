@@ -585,8 +585,8 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
               </div>
             ) : (
               <>
-                {/* Erro não-bloqueante ao consultar assinatura */}
-                {subscriptionError && (
+                {/* Erro não-bloqueante ao consultar assinatura (quando há card pré-carregado) */}
+                {subscriptionError && subscriptionStatus && (
                   <div
                     className={`p-3.5 rounded-xl border flex items-center justify-between gap-3 text-xs ${
                       darkMode
@@ -822,6 +822,51 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
                       </ul>
                     </div>
                   </>
+                ) : !subscriptionStatus || !subscriptionStatus.hasSubscription || Boolean(subscriptionError) ? (
+                  /* ========================================================= */
+                  /* CASO INDISPONÍVEL / NÃO CONFIRMADO (SEM FALSO POSITIVO)   */
+                  /* ========================================================= */
+                  <div
+                    id="subscription-unavailable-card"
+                    className={`p-5 rounded-2xl border relative overflow-hidden ${
+                      darkMode
+                        ? 'bg-[#202c33] border-amber-500/30'
+                        : 'bg-white border-amber-200'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
+                      <div>
+                        <span className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-400 border border-amber-500/30 inline-block mb-1.5">
+                          Assinatura
+                        </span>
+                        <h3 className="text-lg font-bold">
+                          {subscriptionError
+                            ? 'Status da assinatura indisponível'
+                            : 'Assinatura não confirmada'}
+                        </h3>
+                        <p className="text-xs text-[#8696a0]">Empresa: {currentAccount?.name}</p>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30 flex items-center gap-1 shrink-0">
+                        <AlertCircle className="w-3.5 h-3.5" />
+                        <span>Não confirmado</span>
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-[#8696a0] leading-relaxed mb-4">
+                      {subscriptionError ||
+                        'Não foi possível confirmar uma assinatura ativa para esta empresa no momento.'}
+                    </p>
+
+                    {onRefreshSubscription && (
+                      <button
+                        type="button"
+                        onClick={onRefreshSubscription}
+                        className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-semibold transition-colors cursor-pointer"
+                      >
+                        Tentar novamente
+                      </button>
+                    )}
+                  </div>
                 ) : (
                   /* ========================================================= */
                   /* CASO 3: OUTRO PLANO / ASSINATURA ATIVA                    */
@@ -884,7 +929,7 @@ export const ToolsView: React.FC<ToolsViewProps> = ({
                 )}
 
                 {/* Upgrade / Contratação de Plano (sem gateway nesta etapa) */}
-                {!subscriptionStatus?.isLegacy && (
+                {subscriptionStatus && !subscriptionStatus.isLegacy && (
                   <div
                     className={`p-4 rounded-xl border border-dashed flex items-center justify-between gap-3 ${
                       darkMode ? 'bg-[#202c33]/40 border-[#2f3b43]' : 'bg-white/40 border-[#e9edef]'

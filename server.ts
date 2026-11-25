@@ -31,13 +31,14 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 }
 app.use('/uploads', express.static(UPLOADS_DIR));
 
-// Configuração do Supabase com service_role para operações seguras de backend
+// Configuração do Supabase para operações de backend (sem bypass privilegiado enquanto rotas /api/* não validarem JWT)
 const rawUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
 const cleanSupabaseUrl = rawUrl.trim().replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '');
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+const configuredServiceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
+const backendPublicKey = (process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '').trim();
 
-const supabaseAdmin = cleanSupabaseUrl && serviceRoleKey
-  ? createClient(cleanSupabaseUrl, serviceRoleKey, {
+const supabaseAdmin = cleanSupabaseUrl && backendPublicKey
+  ? createClient(cleanSupabaseUrl, backendPublicKey, {
       auth: { persistSession: false },
     })
   : null;
@@ -143,253 +144,18 @@ app.get('/api/accounts', async (req, res) => {
   }
 });
 
-// Cadastrar nova empresa e usuário gestor + Agente IA com senha segura
-app.post('/api/auth/register', async (req, res) => {
-  if (!supabaseAdmin) {
-    return res.status(503).json({ error: 'Supabase admin não configurado' });
-  }
-
-  try {
-    const { companyName, companySegment, adminName, email, password } = req.body;
-
-    if (!companyName || !email) {
-      return res.status(400).json({ error: 'Nome da empresa e e-mail são obrigatórios' });
-    }
-
-    if (!password || typeof password !== 'string' || password.length < 6) {
-      return res.status(400).json({ error: 'A senha é obrigatória e deve ter pelo menos 6 caracteres' });
-    }
-
-    const cleanEmail = email.trim().toLowerCase();
-
-    // 1. Criar ou atualizar usuário no Supabase Auth com a senha digitada
-    let authUserId: string | null = null;
-    try {
-      const { data: createdAuth, error: authError } = await supabaseAdmin.auth.admin.createUser({
-        email: cleanEmail,
-        password: password,
-        email_confirm: true,
-        user_metadata: { name: adminName || 'Administrador' },
-      });
-
-      if (createdAuth?.user) {
-        authUserId = createdAuth.user.id;
-      } else if (authError) {
-        // Se já existir no auth.users, atualiza a senha dele
-        const { data: userList } = await supabaseAdmin.auth.admin.listUsers();
-        const existing = (userList?.users as any[])?.find((u: any) => u.email?.toLowerCase() === cleanEmail);
-        if (existing) {
-          await supabaseAdmin.auth.admin.updateUserById(existing.id, {
-            password,
-            user_metadata: { name: adminName || 'Administrador' },
-          });
-          authUserId = existing.id;
-        }
-      }
-    } catch (authErr) {
-      console.warn('Aviso ao sincronizar Supabase Auth:', authErr);
-    }
-
-    // 2. Gera um slug seguro para a empresa
-    const baseSlug = companyName
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-z0-9]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '') || 'empresa';
-    const slug = `${baseSlug}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-    // 3. Inserir a nova empresa na tabela accounts
-    const { data: newAcc, error: accError } = await supabaseAdmin
-      .from('accounts')
-      .insert({
-        name: companyName,
-        slug,
-        segment: companySegment || 'Serviços & Atendimento',
-        plan: 'pro',
-      })
-      .select()
-      .single();
-
-    if (accError) {
-      return res.status(400).json({ error: `Erro ao criar empresa: ${accError.message}` });
-    }
-
-    // 4. Inserir o Administrador Humano e o Agente IA na tabela account_users
-    const usersToInsert = [
-      {
-        account_id: newAcc.id,
-        user_id: authUserId || null,
-        name: adminName || 'Administrador',
-        email: cleanEmail,
-        role: 'admin',
-        is_ai_agent: false,
-      },
-      {
-        account_id: newAcc.id,
-        name: `Agente IA ${newAcc.name}`,
-        email: `ia@${newAcc.slug}.com`,
-        role: 'ai_agent',
-        is_ai_agent: true,
-      },
-    ];
-
-    const { data: insertedUsers, error: usersError } = await supabaseAdmin
-      .from('account_users')
-      .insert(usersToInsert)
-      .select();
-
-    if (usersError) {
-      console.error('Aviso ao registrar operadores:', usersError);
-    }
-
-    const adminUser = insertedUsers?.find((u) => !u.is_ai_agent) || {
-      id: `usr-${Date.now()}`,
-      account_id: newAcc.id,
-      name: adminName || 'Administrador',
-      email: cleanEmail,
-      role: 'admin',
-    };
-
-    res.status(201).json({
-      success: true,
-      account: {
-        id: newAcc.id,
-        name: newAcc.name,
-        slug: newAcc.slug,
-        segment: newAcc.segment,
-        whatsappPhone: newAcc.whatsapp_phone || '',
-        plan: newAcc.plan,
-        createdAt: newAcc.created_at,
-      },
-      user: {
-        id: adminUser.id,
-        accountId: newAcc.id,
-        name: adminUser.name,
-        email: adminUser.email,
-        role: adminUser.role,
-      },
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Falha ao registrar' });
-  }
+// Rota legada desativada — cadastro centralizado diretamente no Supabase Auth + RPC create_new_account
+app.post('/api/auth/register', (_req, res) => {
+  return res.status(410).json({
+    error: 'Rota desativada por segurança. Utilize o cadastro oficial via Supabase Auth.',
+  });
 });
 
-// Login com verificação rigorosa de e-mail e senha no Supabase Auth
-app.post('/api/auth/login', async (req, res) => {
-  if (!supabaseAdmin) {
-    return res.status(503).json({ error: 'Supabase admin não configurado' });
-  }
-
-  try {
-    const { email, password } = req.body;
-    if (!email) {
-      return res.status(400).json({ error: 'E-mail obrigatório' });
-    }
-    if (!password) {
-      return res.status(400).json({ error: 'Senha obrigatória' });
-    }
-
-    const cleanEmail = email.trim().toLowerCase();
-
-    // 1. Encontrar todas as contas vinculadas a este e-mail na tabela account_users
-    const { data: allUserAccounts } = await supabaseAdmin
-      .from('account_users')
-      .select('*, accounts(*)')
-      .eq('email', cleanEmail);
-
-    if (!allUserAccounts || allUserAccounts.length === 0) {
-      return res.status(404).json({ error: 'Nenhum cadastro encontrado com este e-mail. Cadastre sua empresa na aba ao lado.' });
-    }
-
-    const validAccounts = allUserAccounts.filter((u: any) => u.accounts);
-    if (validAccounts.length === 0) {
-      return res.status(404).json({ error: 'Nenhuma empresa ativa associada a este usuário.' });
-    }
-
-    // Prefere conta com canais ativos, por exemplo GridPlay F1 ou a primeira vinculada
-    const userData = validAccounts.find((u: any) => u.accounts?.name?.includes('GridPlay')) || validAccounts[0];
-
-    // 2. Validação da senha no Supabase Auth
-    const anonClient = createClient(cleanSupabaseUrl, process.env.VITE_SUPABASE_ANON_KEY || serviceRoleKey);
-    const { data: signInData, error: signInError } = await anonClient.auth.signInWithPassword({
-      email: cleanEmail,
-      password: password,
-    });
-
-    if (signInError) {
-      // Caso de transição: conta criada anteriormente sem cadastro em auth.users
-      const { data: authList } = await supabaseAdmin.auth.admin.listUsers();
-      const existingInAuth = (authList?.users as any[])?.find((u: any) => u.email?.toLowerCase() === cleanEmail);
-
-      if (!existingInAuth) {
-        // Cria a credencial no Supabase Auth usando a senha fornecida pelo usuário agora
-        const { data: newAuthUser } = await supabaseAdmin.auth.admin.createUser({
-          email: cleanEmail,
-          password: password,
-          email_confirm: true,
-          user_metadata: { name: userData.name },
-        });
-
-        if (newAuthUser?.user) {
-          await supabaseAdmin
-            .from('account_users')
-            .update({ user_id: newAuthUser.user.id })
-            .eq('id', userData.id);
-        }
-      } else {
-        // Usuário já existe no Auth e a senha digitada não confere
-        return res.status(401).json({ error: 'Senha incorreta. Por favor verifique sua senha e tente novamente.' });
-      }
-    }
-
-    const availableAccounts = validAccounts.map((u: any) => ({
-      id: u.accounts.id,
-      name: u.accounts.name,
-      slug: u.accounts.slug,
-      segment: u.accounts.segment,
-      whatsappPhone: u.accounts.whatsapp_phone || '',
-      plan: u.accounts.plan,
-      createdAt: u.accounts.created_at,
-    }));
-
-    if (availableAccounts.length > 1) {
-      availableAccounts.push({
-        id: 'all',
-        name: 'Todas as Minhas Empresas (Consolidado)',
-        slug: 'todas-minhas-empresas',
-        segment: 'Visão Geral Multi-Tenant',
-        whatsappPhone: '',
-        plan: 'Consolidado',
-        createdAt: new Date().toISOString(),
-      });
-    }
-
-    const acc = userData.accounts;
-    return res.json({
-      success: true,
-      account: {
-        id: acc.id,
-        name: acc.name,
-        slug: acc.slug,
-        segment: acc.segment,
-        whatsappPhone: acc.whatsapp_phone || '',
-        plan: acc.plan,
-        createdAt: acc.created_at,
-      },
-      availableAccounts,
-      user: {
-        id: userData.id,
-        accountId: acc.id,
-        name: userData.name,
-        email: userData.email,
-        role: userData.role,
-      },
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: err?.message || 'Falha no login' });
-  }
+// Rota legada desativada — login centralizado diretamente em supabase.auth.signInWithPassword()
+app.post('/api/auth/login', (_req, res) => {
+  return res.status(410).json({
+    error: 'Rota desativada por segurança. Utilize a autenticação oficial via Supabase Auth.',
+  });
 });
 
 // Buscar canais reais da empresa logada
@@ -2467,78 +2233,26 @@ app.get('/api/audio-proxy', async (req, res) => {
 });
 
 // =========================================================================
-// ATUALIZAÇÃO DE CREDENCIAIS (LOGIN & SENHA) DO USUÁRIO
+// ROTA LEGADA DE CREDENCIAIS DESATIVADA POR SEGURANÇA (HTTP 410 GONE)
 // =========================================================================
-app.post('/api/auth/update-credentials', async (req, res) => {
-  if (!supabaseAdmin) {
-    return res.status(503).json({ error: 'Supabase admin não configurado' });
-  }
-
-  try {
-    const { userId, email, newPassword, name } = req.body;
-    if (!userId && !email) {
-      return res.status(400).json({ error: 'Identificador do usuário ou e-mail é obrigatório' });
-    }
-
-    const cleanEmail = email ? email.trim().toLowerCase() : undefined;
-
-    // 1. Atualizar registro em account_users
-    let query = supabaseAdmin.from('account_users').update({
-      ...(name ? { name } : {}),
-      ...(cleanEmail ? { email: cleanEmail } : {}),
-    });
-
-    if (userId) {
-      query = query.eq('id', userId);
-    } else if (cleanEmail) {
-      query = query.eq('email', cleanEmail);
-    }
-    const { error: userTableErr } = await query;
-    if (userTableErr) {
-      console.warn('Aviso ao atualizar account_users:', userTableErr.message);
-    }
-
-    // 2. Atualizar senha no Supabase Auth caso fornecida
-    if (newPassword && typeof newPassword === 'string' && newPassword.length >= 6) {
-      const { data: authList } = await supabaseAdmin.auth.admin.listUsers();
-      const existingInAuth = (authList?.users as any[])?.find(
-        (u: any) => u.id === userId || (cleanEmail && u.email?.toLowerCase() === cleanEmail)
-      );
-
-      if (existingInAuth) {
-        await supabaseAdmin.auth.admin.updateUserById(existingInAuth.id, {
-          password: newPassword,
-          ...(cleanEmail ? { email: cleanEmail } : {}),
-          ...(name ? { user_metadata: { name } } : {}),
-        });
-      } else if (cleanEmail) {
-        await supabaseAdmin.auth.admin.createUser({
-          email: cleanEmail,
-          password: newPassword,
-          email_confirm: true,
-          user_metadata: { name: name || 'Administrador' },
-        });
-      }
-    }
-
-    return res.json({
-      success: true,
-      message: 'Credenciais atualizadas com sucesso!',
-      user: {
-        name,
-        email: cleanEmail,
-      },
-    });
-  } catch (err: any) {
-    console.error('Erro ao atualizar credenciais:', err);
-    return res.status(500).json({ error: err?.message || 'Falha ao atualizar credenciais' });
-  }
+app.post('/api/auth/update-credentials', (_req, res) => {
+  return res.status(410).json({
+    error: 'Rota desativada por segurança. Utilize o fluxo autenticado do Supabase Auth.',
+  });
 });
 
 // =========================================================================
 // SETUP DO VITE (DEV vs PROD)
 // =========================================================================
 async function startServer() {
+  // Proteção preventiva: não derruba o preview, mas impede uso de SUPABASE_SERVICE_ROLE_KEY
+  // enquanto as demais rotas /api/* administrativas não validarem Bearer JWT e vínculo multi-tenant.
+  if (configuredServiceRoleKey) {
+    console.warn(
+      '[SecurityGuard] SUPABASE_SERVICE_ROLE_KEY detectada no ambiente, mas desabilitada em server.ts por falta de autenticação nas rotas /api/*.'
+    );
+  }
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true, hmr: false, ws: false },
